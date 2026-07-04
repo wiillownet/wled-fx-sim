@@ -1,0 +1,203 @@
+import { describe, expect, it } from 'vitest';
+import type { RGB } from './lib8.js';
+import {
+  B,
+  G,
+  LINEARBLEND,
+  LINEARBLEND_NOWRAP,
+  NOBLEND,
+  PRNG,
+  R,
+  beatsin8_t,
+  color_blend,
+  color_fade,
+  colorFromPalette,
+  cos8_t,
+  hsv2rgb_rainbow,
+  lerp8by8,
+  qadd8,
+  qsub8,
+  rgbw32,
+  scale8,
+  scale8_video,
+  sin16_t,
+  sin8_t,
+  triwave8,
+} from './lib8.js';
+
+// Anchors below are the exact outputs of WLED 16.0's integer math (wled_math.cpp
+// / util.cpp / colors.cpp / prng.h), NOT FastLED's table sin8 -- WLED replaced
+// those. Verified against a faithful replica of the firmware source.
+
+describe('sin8_t / cos8_t / sin16_t', () => {
+  it('sin8_t hits the firmware anchors', () => {
+    expect(sin8_t(0)).toBe(128);
+    expect(sin8_t(64)).toBe(255);
+    expect(sin8_t(128)).toBe(126); // WLED's approximation, not exactly 128
+    expect(sin8_t(192)).toBe(0);
+    expect(sin8_t(255)).toBe(128);
+  });
+
+  it('sin8_t wraps its 8-bit input (256 == 0)', () => {
+    expect(sin8_t(256)).toBe(sin8_t(0));
+    expect(sin8_t(320)).toBe(sin8_t(64));
+  });
+
+  it('cos8_t is sin8_t shifted by 64', () => {
+    expect(cos8_t(0)).toBe(255);
+    expect(cos8_t(64)).toBe(126);
+    expect(cos8_t(128)).toBe(0);
+  });
+
+  it('sin16_t hits the firmware anchors', () => {
+    expect(sin16_t(0)).toBe(0);
+    expect(sin16_t(16384)).toBe(32766);
+    expect(sin16_t(32768)).toBe(0);
+    expect(sin16_t(49152)).toBe(-32766);
+  });
+});
+
+describe('scale/qadd/qsub/lerp/triwave', () => {
+  it('scale8', () => {
+    expect(scale8(255, 255)).toBe(255);
+    expect(scale8(255, 0)).toBe(0);
+    expect(scale8(255, 128)).toBe(128);
+    expect(scale8(0, 200)).toBe(0);
+  });
+
+  it('scale8_video keeps a non-zero input alive', () => {
+    expect(scale8_video(255, 1)).toBe(1); // plain scale8(255,1) would be 0
+    expect(scale8_video(0, 255)).toBe(0);
+    expect(scale8_video(200, 0)).toBe(0);
+  });
+
+  it('qadd8 / qsub8 saturate', () => {
+    expect(qadd8(200, 100)).toBe(255);
+    expect(qadd8(10, 20)).toBe(30);
+    expect(qsub8(10, 20)).toBe(0);
+    expect(qsub8(200, 50)).toBe(150);
+  });
+
+  it('lerp8by8 interpolates', () => {
+    expect(lerp8by8(0, 255, 0)).toBe(0);
+    expect(lerp8by8(0, 255, 255)).toBe(255);
+    expect(lerp8by8(0, 200, 128)).toBe(100);
+  });
+
+  it('triwave8 is a triangle', () => {
+    expect(triwave8(0)).toBe(0);
+    expect(triwave8(64)).toBe(128);
+    expect(triwave8(128)).toBe(254);
+    expect(triwave8(192)).toBe(126);
+  });
+});
+
+describe('beatsin8_t', () => {
+  it('stays within [lowest, highest] across a period', () => {
+    for (let t = 0; t < 4000; t += 37) {
+      const v = beatsin8_t(60, t, 20, 200);
+      expect(v).toBeGreaterThanOrEqual(20);
+      expect(v).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it('is deterministic for a given now', () => {
+    expect(beatsin8_t(120, 1234, 0, 255)).toBe(beatsin8_t(120, 1234, 0, 255));
+  });
+});
+
+describe('color helpers (packed uint32)', () => {
+  it('rgbw32 packs unsigned', () => {
+    expect(rgbw32(255, 0, 0)).toBe(0xff0000);
+    const white = rgbw32(0, 0, 0, 255);
+    expect(white).toBe(0xff000000);
+    expect(white).toBeGreaterThan(0); // unsigned, not negative
+  });
+
+  it('color_blend hits firmware anchors', () => {
+    expect(color_blend(0xff0000, 0x0000ff, 0)).toBe(0xff0000);
+    expect(color_blend(0xff0000, 0x0000ff, 255)).toBe(0x0000ff);
+    expect(color_blend(0xff0000, 0x0000ff, 128)).toBe(0x7f0080);
+  });
+
+  it('color_fade toward black', () => {
+    expect(color_fade(0xff0000, 0)).toBe(0);
+    expect(color_fade(0xff0000, 255)).toBe(0xff0000);
+    expect(R(color_fade(0xff0000, 128))).toBeLessThan(255);
+    // video fade keeps a bright color from collapsing fully to black
+    expect(color_fade(0xffffff, 1, true)).not.toBe(0);
+  });
+});
+
+describe('colorFromPalette', () => {
+  const pal: RGB[] = Array.from({ length: 16 }, (_, i) =>
+    i < 8 ? [255, 0, 0] : [0, 0, 255],
+  );
+
+  it('reads discrete entries at NOBLEND', () => {
+    expect(colorFromPalette(pal, 0, 255, NOBLEND)).toBe(0xff0000);
+    expect(colorFromPalette(pal, 128, 255, NOBLEND)).toBe(0x0000ff);
+  });
+
+  it('blends between adjacent entries (LINEARBLEND)', () => {
+    expect(colorFromPalette(pal, 0, 255, LINEARBLEND)).toBe(0xff0000);
+    expect(colorFromPalette(pal, 128, 255, LINEARBLEND)).toBe(0x0000ff);
+    // index 120 sits on the red->blue boundary between entry 7 and 8
+    expect(colorFromPalette(pal, 120, 255, LINEARBLEND)).toBe(0x7f007f);
+  });
+
+  it('brightness scales output', () => {
+    const dim = colorFromPalette(pal, 0, 128, LINEARBLEND_NOWRAP);
+    expect(R(dim)).toBeLessThan(255);
+    expect(R(dim)).toBeGreaterThan(0);
+  });
+});
+
+describe('hsv2rgb_rainbow', () => {
+  it('produces valid RGB across the hue wheel', () => {
+    for (let h = 0; h < 0x10000; h += 0x800) {
+      const c = hsv2rgb_rainbow(h, 255, 255);
+      expect(R(c)).toBeGreaterThanOrEqual(0);
+      expect(R(c)).toBeLessThanOrEqual(255);
+      expect(G(c)).toBeLessThanOrEqual(255);
+      expect(B(c)).toBeLessThanOrEqual(255);
+    }
+  });
+
+  it('hue 0 is red-dominant, value 0 is black', () => {
+    expect(R(hsv2rgb_rainbow(0, 255, 255))).toBe(255);
+    expect(hsv2rgb_rainbow(0, 255, 0)).toBe(0);
+  });
+});
+
+describe('PRNG (deterministic, seeded)', () => {
+  it('reproduces the firmware sequence for seed 0x1234', () => {
+    const rng = new PRNG(0x1234);
+    const seq = Array.from({ length: 6 }, () => rng.random16());
+    expect(seq).toEqual([57065, 37902, 5062, 18262, 48028, 49913]);
+  });
+
+  it('random8 mirrors the low byte of the same stream', () => {
+    const rng = new PRNG(0x1234);
+    const seq = Array.from({ length: 6 }, () => rng.random8());
+    expect(seq).toEqual([233, 14, 198, 86, 156, 249]);
+  });
+
+  it('two generators with the same seed agree step for step', () => {
+    const a = new PRNG(42);
+    const b = new PRNG(42);
+    for (let i = 0; i < 100; i++) expect(a.random16()).toBe(b.random16());
+  });
+
+  it('bounded forms stay in range', () => {
+    const rng = new PRNG(7);
+    for (let i = 0; i < 200; i++) {
+      const r8 = rng.random8(5, 12);
+      expect(r8).toBeGreaterThanOrEqual(5);
+      expect(r8).toBeLessThan(12);
+      const r16 = rng.random16(1000);
+      expect(r16).toBeGreaterThanOrEqual(0);
+      expect(r16).toBeLessThan(1000);
+    }
+  });
+});
