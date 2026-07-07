@@ -12,6 +12,7 @@
 import { Segment } from './segment.js';
 import {
   NOBLEND,
+  PRNG,
   averageLight,
   beat16,
   beat8,
@@ -24,6 +25,7 @@ import {
   color_fade,
   cubicwave8,
   gamma32inv,
+  gamma8,
   gamma8inv,
   hsv2rgb_rainbow,
   qadd8,
@@ -1887,6 +1889,500 @@ function modeFlowStripe(seg: Segment): void {
   }
 }
 
+// --- Oscillate (62) -----------------------------------------------------------
+interface Oscillator {
+  pos: number;
+  size: number;
+  dir: number;
+  speed: number;
+}
+
+const oscillatorState = new WeakMap<Segment, Oscillator[]>();
+
+function modeOscillate(seg: Segment): void {
+  let oscillators = oscillatorState.get(seg);
+  if (seg.call === 0 || !oscillators) {
+    oscillators = [
+      {
+        pos: Math.trunc(seg.length / 4),
+        size: Math.trunc(seg.length / 8),
+        dir: 1,
+        speed: 1,
+      },
+      {
+        pos: Math.trunc((seg.length / 4) * 3),
+        size: Math.trunc(seg.length / 8),
+        dir: 1,
+        speed: 2,
+      },
+      {
+        pos: Math.trunc((seg.length / 4) * 2),
+        size: Math.trunc(seg.length / 8),
+        dir: -1,
+        speed: 1,
+      },
+    ];
+    oscillatorState.set(seg, oscillators);
+  }
+
+  const cycleTime = 20 + 2 * (255 - seg.speed);
+  const it = Math.trunc(seg.now / cycleTime);
+
+  for (const osc of oscillators) {
+    if (it !== seg.step) osc.pos += osc.dir * osc.speed;
+    osc.size = Math.trunc(seg.length / (3 + Math.trunc(seg.intensity / 8)));
+    // Firmware detects wraparound via uint16_t underflow (pos goes huge, not
+    // negative); this sim's pos is a plain signed number, so it checks the
+    // actual intent -- pos dropping below zero -- directly instead.
+    if (osc.dir === -1 && osc.pos < 0) {
+      osc.pos = 0;
+      osc.dir = 1;
+      osc.speed =
+        seg.speed > 100 ? seg.rng.random8(2, 4) : seg.rng.random8(1, 3);
+    }
+    if (osc.dir === 1 && osc.pos >= seg.length - 1) {
+      osc.pos = seg.length - 1;
+      osc.dir = -1;
+      osc.speed =
+        seg.speed > 100 ? seg.rng.random8(2, 4) : seg.rng.random8(1, 3);
+    }
+  }
+
+  for (let i = 0; i < seg.length; i++) {
+    let color = BLACK;
+    for (let j = 0; j < oscillators.length; j++) {
+      const osc = oscillators[j];
+      if (i >= osc.pos - osc.size && i <= osc.pos + osc.size) {
+        color =
+          color === BLACK
+            ? seg.color(j)
+            : color_blend(color, seg.color(j), 128);
+      }
+    }
+    seg.setPixelColor(i, color);
+  }
+
+  seg.step = it;
+}
+
+// --- Tetrix (44) / Bouncing Balls (91) / Popcorn (95) -------------------------
+// All three wrap their body in firmware's virtualStrip::runStrip() indirection
+// to run 1D logic across the columns of a 2D matrix (nrOfVStrips() > 1 there).
+// This sim is 1D-only (nrOfVStrips() is always 1), so the indirection collapses
+// to a single direct pass -- indexToVStrip(index, 0) is dropped entirely.
+
+interface TetrisDrop {
+  pos: number;
+  speed: number;
+  col: number;
+  brick: number;
+  stack: number;
+  step: number;
+}
+
+const tetrixState = new WeakMap<Segment, TetrisDrop>();
+
+function modeTetrix(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  let drop = tetrixState.get(seg);
+  if (seg.call === 0 || !drop) {
+    drop = { pos: 0, speed: 0, col: 0, brick: 0, stack: 0, step: 0 };
+    tetrixState.set(seg, drop);
+  }
+
+  if (seg.call === 0) {
+    drop.stack = 0;
+    drop.step = seg.now + 2000;
+    if (seg.check1) drop.col = 0;
+  }
+
+  if (drop.step === 0) {
+    const speedIn = seg.speed !== 0 ? seg.speed : seg.rng.random8(1, 255);
+    const speedMapped = map(speedIn, 1, 255, 5000, 250);
+    drop.speed = (seg.length * FRAMETIME) / speedMapped;
+    drop.pos = seg.length;
+    if (!seg.check1) drop.col = seg.rng.random8(0, 15) << 4;
+    drop.step = 1;
+    drop.brick =
+      (seg.intensity !== 0 ? (seg.intensity >> 5) + 1 : seg.rng.random8(1, 5)) *
+      (1 + (seg.length >> 6));
+  }
+
+  if (drop.step === 1) {
+    if (seg.rng.random8() >> 6) drop.step = 2;
+  }
+
+  if (drop.step === 2) {
+    if (drop.pos > drop.stack) {
+      drop.pos -= drop.speed;
+      if (Math.trunc(drop.pos) < Math.trunc(drop.stack)) drop.pos = drop.stack;
+      for (let i = Math.trunc(drop.pos); i < seg.length; i++) {
+        const col =
+          i < Math.trunc(drop.pos) + drop.brick
+            ? seg.color_from_palette(drop.col, false, false, 0)
+            : seg.color(1);
+        seg.setPixelColor(i, col);
+      }
+    } else {
+      drop.step = 0;
+      drop.stack += drop.brick;
+      if (drop.stack >= seg.length) drop.step = seg.now + 2000;
+    }
+  }
+
+  if (drop.step > 2) {
+    drop.brick = 0;
+    if (drop.step > seg.now) {
+      for (let i = 0; i < seg.length; i++)
+        blendPixelColor(seg, i, seg.color(1), 25);
+    } else {
+      drop.stack = 0;
+      drop.step = 0;
+      if (seg.check1) drop.col += 8;
+    }
+  }
+}
+
+interface Ball {
+  lastBounceTime: number;
+  impactVelocity: number;
+  height: number;
+}
+
+const MAX_BALLS = 16;
+const ballsState = new WeakMap<Segment, Ball[]>();
+
+function modeBouncingBalls(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  let balls = ballsState.get(seg);
+  if (seg.call === 0 || !balls) {
+    balls = Array.from({ length: MAX_BALLS }, () => ({
+      lastBounceTime: seg.now,
+      impactVelocity: 0,
+      height: 0,
+    }));
+    ballsState.set(seg, balls);
+  }
+
+  if (!seg.check2) seg.fill(seg.color(2) ? BLACK : seg.color(1));
+
+  const numBalls = Math.trunc((seg.intensity * (MAX_BALLS - 1)) / 255) + 1;
+  const gravity = -9.81;
+  const hasCol2 = seg.color(2) !== 0;
+  const time = seg.now;
+
+  for (let i = 0; i < numBalls; i++) {
+    const timeSinceLastBounce =
+      (time - balls[i].lastBounceTime) /
+      (Math.trunc((255 - seg.speed) / 64) + 1);
+    const timeSec = timeSinceLastBounce / 1000;
+    balls[i].height =
+      (0.5 * gravity * timeSec + balls[i].impactVelocity) * timeSec;
+
+    if (balls[i].height <= 0) {
+      balls[i].height = 0;
+      const dampening = 0.9 - i / (numBalls * numBalls);
+      balls[i].impactVelocity = dampening * balls[i].impactVelocity;
+      balls[i].lastBounceTime = time;
+
+      if (balls[i].impactVelocity < 0.015) {
+        balls[i].impactVelocity =
+          Math.sqrt(-2 * gravity) * (seg.rng.random8(5, 11) / 10);
+      }
+    } else if (balls[i].height > 1) {
+      continue;
+    }
+
+    let color = seg.color(0);
+    if (seg.palette) {
+      color = seg.color_wheel(Math.trunc(i * (256 / Math.max(numBalls, 8))));
+    } else if (hasCol2) {
+      color = seg.color(i % 3);
+    }
+
+    // Firmware's WLED_USE_AA_PIXELS sub-pixel positioning branch is a
+    // hardware-output nicety that doesn't apply to this 1D RGB-buffer sim.
+    const pos = Math.round(balls[i].height * (seg.length - 1));
+    seg.setPixelColor(pos, color);
+  }
+}
+
+interface Spark {
+  pos: number;
+  vel: number;
+  colIndex: number;
+}
+
+// Firmware caps usable popcorn kernels by a device memory budget
+// (FAIR_DATA_PER_SEG, 256-640 bytes depending on hardware) this sim has no
+// equivalent for -- always uses the firmware max (21).
+const MAX_POPCORN = 21;
+const popcornState = new WeakMap<Segment, Spark[]>();
+
+function modePopcorn(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  let popcorn = popcornState.get(seg);
+  if (seg.call === 0 || !popcorn) {
+    popcorn = Array.from({ length: MAX_POPCORN }, () => ({
+      pos: -1,
+      vel: 0,
+      colIndex: 0,
+    }));
+    popcornState.set(seg, popcorn);
+  }
+
+  const hasCol2 = seg.color(2) !== 0;
+  if (!seg.check2) seg.fill(hasCol2 ? BLACK : seg.color(1));
+
+  let gravity = -0.0001 - seg.speed / 200000;
+  gravity *= seg.length;
+
+  let numPopcorn = Math.trunc((seg.intensity * MAX_POPCORN) / 255);
+  if (numPopcorn === 0) numPopcorn = 1;
+
+  for (let i = 0; i < numPopcorn; i++) {
+    if (popcorn[i].pos >= 0) {
+      popcorn[i].pos += popcorn[i].vel;
+      popcorn[i].vel += gravity;
+    } else if (seg.rng.random8() < 2) {
+      popcorn[i].pos = 0.01;
+      let peakHeight = 128 + seg.rng.random8(128);
+      peakHeight = (peakHeight * (seg.length - 1)) >> 8;
+      popcorn[i].vel = Math.sqrt(-2 * gravity * peakHeight);
+
+      if (seg.palette) {
+        popcorn[i].colIndex = seg.rng.random8();
+      } else {
+        let col = seg.rng.random8(0, 3);
+        if (!seg.color(2) || !seg.color(col)) col = 0;
+        popcorn[i].colIndex = col;
+      }
+    }
+    if (popcorn[i].pos >= 0) {
+      let col = seg.color_wheel(popcorn[i].colIndex);
+      if (!seg.palette && popcorn[i].colIndex < 3)
+        col = seg.color(popcorn[i].colIndex);
+      const ledIndex = Math.trunc(popcorn[i].pos);
+      if (ledIndex < seg.length) seg.setPixelColor(ledIndex, col);
+    }
+  }
+}
+
+// --- Fairy (49) / Fairytwinkle (51) --------------------------------------------
+interface Flasher {
+  stateStart: number;
+  stateDur: number;
+  stateOn: boolean;
+}
+
+const FLASHERS_PER_ZONE = 6;
+const MAX_SHIMMER = 92;
+const fairyFlashers = new WeakMap<Segment, Flasher[]>();
+
+function modeFairy(seg: Segment): void {
+  // strip.getCurrSegmentId() has no equivalent (no multi-segment concept) --
+  // assumed segment 0, matching this sim's other single-segment assumptions.
+  let prng16 = 5100 & 0xffff;
+  for (let i = 0; i < seg.length; i++) {
+    prng16 = (prng16 * 2053 + 1384) & 0xffff;
+    seg.setPixelColor(i, seg.color_from_palette(prng16 >> 8, false, false, 0));
+  }
+
+  if (seg.intensity === 0) return;
+  const flasherDistance = Math.trunc((255 - seg.intensity) / 28) + 1;
+  const numFlashers = Math.trunc(seg.length / flasherDistance) + 1;
+
+  let flashers = fairyFlashers.get(seg);
+  if (!flashers || flashers.length !== numFlashers) {
+    flashers = Array.from({ length: numFlashers }, () => ({
+      stateStart: 0,
+      stateDur: 0,
+      stateOn: false,
+    }));
+    fairyFlashers.set(seg, flashers);
+  }
+  const now16 = seg.now & 0xffff;
+
+  let zones = Math.trunc(numFlashers / FLASHERS_PER_ZONE);
+  if (!zones) zones = 1;
+  let flashersInZone = Math.trunc(numFlashers / zones);
+  const flasherBri: number[] = new Array(FLASHERS_PER_ZONE * 2 - 1).fill(0);
+
+  for (let z = 0; z < zones; z++) {
+    let flasherBriSum = 0;
+    const firstFlasher = z * flashersInZone;
+    if (z === zones - 1)
+      flashersInZone = numFlashers - flashersInZone * (zones - 1);
+
+    for (let f = firstFlasher; f < firstFlasher + flashersInZone; f++) {
+      let stateTime = (now16 - flashers[f].stateStart) & 0xffff;
+      if (stateTime > flashers[f].stateDur * 10) {
+        flashers[f].stateOn = !flashers[f].stateOn;
+        if (flashers[f].stateOn) {
+          flashers[f].stateDur =
+            12 + seg.rng.random8(12 + ((255 - seg.speed) >> 2));
+        } else {
+          flashers[f].stateDur =
+            20 + seg.rng.random8(6 + ((255 - seg.speed) >> 2));
+        }
+        flashers[f].stateStart = now16;
+        if (stateTime < 255) {
+          flashers[f].stateStart =
+            (flashers[f].stateStart - (255 - stateTime)) & 0xffff;
+          flashers[f].stateDur += 26 - Math.trunc(stateTime / 10);
+          stateTime = 255 - stateTime;
+        } else {
+          stateTime = 0;
+        }
+      }
+      if (stateTime > 255) stateTime = 255;
+      flasherBri[f - firstFlasher] = flashers[f].stateOn
+        ? stateTime
+        : 255 - stateTime;
+      flasherBriSum += flasherBri[f - firstFlasher];
+    }
+
+    const avgFlasherBri = Math.trunc(flasherBriSum / flashersInZone);
+    const globalPeakBri = 255 - ((avgFlasherBri * MAX_SHIMMER) >> 8);
+
+    for (let f = firstFlasher; f < firstFlasher + flashersInZone; f++) {
+      const bri = Math.trunc(
+        (flasherBri[f - firstFlasher] * globalPeakBri) / 255,
+      );
+      prng16 = (prng16 * 2053 + 1384) & 0xffff;
+      const flasherPos = f * flasherDistance;
+      seg.setPixelColor(
+        flasherPos,
+        color_blend(
+          seg.color(1),
+          seg.color_from_palette(prng16 >> 8, false, false, 0),
+          bri,
+        ),
+      );
+      for (
+        let i = flasherPos + 1;
+        i < flasherPos + flasherDistance && i < seg.length;
+        i++
+      ) {
+        prng16 = (prng16 * 2053 + 1384) & 0xffff;
+        seg.setPixelColor(
+          i,
+          seg.color_from_palette(prng16 >> 8, false, false, 0, globalPeakBri),
+        );
+      }
+    }
+  }
+}
+
+const fairytwinkleFlashers = new WeakMap<Segment, Flasher[]>();
+
+function modeFairytwinkle(seg: Segment): void {
+  let flashers = fairytwinkleFlashers.get(seg);
+  if (!flashers || flashers.length !== seg.length) {
+    flashers = Array.from({ length: seg.length }, () => ({
+      stateStart: 0,
+      stateDur: 0,
+      stateOn: false,
+    }));
+    fairytwinkleFlashers.set(seg, flashers);
+  }
+  const now16 = seg.now & 0xffff;
+  let prng16 = 5100 & 0xffff; // strip.getCurrSegmentId() -- assumed segment 0
+
+  const riseFallTime = 400 + (255 - seg.speed) * 3;
+  const maxDur =
+    Math.trunc(riseFallTime / 100) +
+    ((255 - seg.intensity) >> 2) +
+    13 +
+    ((255 - seg.intensity) >> 1);
+
+  for (let f = 0; f < seg.length; f++) {
+    let stateTime = (now16 - flashers[f].stateStart) & 0xffff;
+    if (stateTime > flashers[f].stateDur * 100) {
+      flashers[f].stateOn = !flashers[f].stateOn;
+      const init = flashers[f].stateDur === 0;
+      if (flashers[f].stateOn) {
+        flashers[f].stateDur =
+          Math.trunc(riseFallTime / 100) +
+          ((255 - seg.intensity) >> 2) +
+          seg.rng.random8(12 + ((255 - seg.intensity) >> 1)) +
+          1;
+      } else {
+        flashers[f].stateDur =
+          Math.trunc(riseFallTime / 100) +
+          seg.rng.random8(3 + ((255 - seg.speed) >> 6)) +
+          1;
+      }
+      flashers[f].stateStart = now16;
+      stateTime = 0;
+      if (init) {
+        flashers[f].stateStart =
+          (flashers[f].stateStart - riseFallTime) & 0xffff;
+        flashers[f].stateDur =
+          Math.trunc(riseFallTime / 100) +
+          seg.rng.random8(12 + ((255 - seg.intensity) >> 1)) +
+          5;
+        stateTime = riseFallTime;
+      }
+    }
+    if (flashers[f].stateOn && flashers[f].stateDur > maxDur)
+      flashers[f].stateDur = maxDur;
+    if (stateTime > riseFallTime) stateTime = riseFallTime;
+    const fadeprog = 255 - Math.trunc((stateTime * 255) / riseFallTime);
+    const flasherBri = flashers[f].stateOn
+      ? 255 - gamma8(fadeprog)
+      : gamma8(fadeprog);
+    const lastR = prng16;
+    let diff = 0;
+    while (diff < 0x4000) {
+      prng16 = (prng16 * 2053 + 1384) & 0xffff;
+      diff = prng16 > lastR ? prng16 - lastR : lastR - prng16;
+    }
+    seg.setPixelColor(
+      f,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(prng16 >> 8, false, false, 0),
+        flasherBri,
+      ),
+    );
+  }
+}
+
+// --- Twinkleup (106) ------------------------------------------------------
+// Firmware reseeds a *second*, globally-shared `prng` (distinct from
+// hw_random8/16, which seg.rng already stands in for elsewhere) to a fixed
+// seed each call, then restores the caller's seed afterward -- deliberate,
+// so every frame redraws the exact same per-pixel pattern. This sim just
+// creates a fresh local instance each call instead: same effect (always
+// starts from the same seed), no shared global state to save/restore.
+function modeTwinkleup(seg: Segment): void {
+  const localPrng = new PRNG(535);
+  for (let i = 0; i < seg.length; i++) {
+    const ranstart = localPrng.random8();
+    let pixBri = sin8(
+      (ranstart + Math.trunc((16 * seg.now) / (256 - seg.speed))) & 0xff,
+    );
+    if (localPrng.random8() > seg.intensity) pixBri = 0;
+    seg.setPixelColor(
+      i,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(
+          localPrng.random8() + Math.trunc(seg.now / 100),
+          false,
+          false,
+          0,
+        ),
+        pixBri,
+      ),
+    );
+  }
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -1943,4 +2439,11 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   113: modeWashingMachine,
   115: modeBlends,
   179: modeFlowStripe,
+  44: modeTetrix,
+  49: modeFairy,
+  51: modeFairytwinkle,
+  62: modeOscillate,
+  91: modeBouncingBalls,
+  95: modePopcorn,
+  106: modeTwinkleup,
 };

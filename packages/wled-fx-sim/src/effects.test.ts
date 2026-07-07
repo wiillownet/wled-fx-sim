@@ -429,4 +429,101 @@ describe('spot checks against known behavior', () => {
     expect(sawFlash).toBe(true);
     expect(sawQuiet).toBe(true);
   });
+
+  it('Oscillate (62) shows multiple distinct color bands', () => {
+    const sim = createEffectSim(62, {
+      length: 40,
+      sx: 128,
+      ix: 128,
+      colors: [RED, GREEN, BLUE],
+    });
+    const buf = sim.frame(500);
+    const uniqueColors = new Set(buf.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(1);
+  });
+
+  it('Bouncing Balls (91) lights pixels within strip bounds over time', () => {
+    const sim = createEffectSim(91, {
+      length: 30,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawLit = false;
+    for (let t = 0; t < 3000; t += 30) {
+      const buf = sim.frame(t);
+      expect(buf.length).toBe(30);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 50)) sawLit = true;
+    }
+    expect(sawLit).toBe(true);
+  });
+
+  it('Popcorn (95) eventually pops a kernel above the background', () => {
+    const sim = createEffectSim(95, {
+      length: 30,
+      sx: 128,
+      ix: 200,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawKernel = false;
+    for (let t = 0; t < 6000; t += 30) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 100)) sawKernel = true;
+    }
+    expect(sawKernel).toBe(true);
+  });
+
+  it('Tetrix (44) eventually shows a falling brick against the background', () => {
+    const sim = createEffectSim(44, {
+      length: 20,
+      sx: 200,
+      ix: 128,
+      colors: [[255, 200, 50], BLACK_RGB, BLACK_RGB],
+    });
+    let sawBrick = false;
+    for (let t = 0; t < 5000; t += 40) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 60)) sawBrick = true;
+    }
+    expect(sawBrick).toBe(true);
+  });
+
+  it('Fairy (49) fills the strip with varied palette colors', () => {
+    // palette 0 ("Default") short-circuits color_from_palette to the raw
+    // segment color regardless of index -- an actual palette is needed to
+    // see per-pixel hue variation, same as the Colorwaves/Plasma spot checks.
+    const sim = createEffectSim(49, { length: 30, sx: 128, ix: 0, pal: 26 });
+    const buf = sim.frame(0);
+    const uniqueColors = new Set(buf.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(1);
+  });
+
+  it('Fairytwinkle (51) fades individual pixels up and down over time', () => {
+    const sim = createEffectSim(51, {
+      length: 20,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let minLum = Infinity;
+    let maxLum = 0;
+    for (let t = 0; t < 6000; t += 50) {
+      const lum = sim.frame(t)[0].reduce((s, c) => s + c, 0);
+      minLum = Math.min(minLum, lum);
+      maxLum = Math.max(maxLum, lum);
+    }
+    expect(maxLum).toBeGreaterThan(minLum);
+  });
+
+  it('Twinkleup (106) at max intensity keeps most pixels lit', () => {
+    const sim = createEffectSim(106, {
+      length: 30,
+      sx: 128,
+      ix: 255,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const buf = sim.frame(500);
+    const lit = buf.filter((px) => px[0] + px[1] + px[2] > 0);
+    expect(lit.length).toBeGreaterThan(15);
+  });
 });

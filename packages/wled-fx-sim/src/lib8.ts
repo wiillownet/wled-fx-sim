@@ -326,6 +326,15 @@ export function gamma8inv(val: number): number {
   return Math.round(((v - 0.5) / 255) ** (1 / GAMMA_DEFAULT) * 255);
 }
 
+/** WLED gamma8 (NeoGammaWLEDMethod::rawGamma8), the forward direction -- some
+ * effects call this directly for their own fade curve, separate from the
+ * device's automatic output-stage correction. Also at gamma 2.2. */
+export function gamma8(val: number): number {
+  const v = u8(val);
+  if (v === 0) return 0;
+  return Math.round((v / 255) ** GAMMA_DEFAULT * 255);
+}
+
 /** WLED gamma32inv (NeoGammaWLEDMethod::inverseGamma32) -- per-channel gamma8inv. */
 export function gamma32inv(c: number): number {
   return rgbw32(
