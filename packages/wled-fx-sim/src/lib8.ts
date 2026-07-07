@@ -153,6 +153,32 @@ export function beatsin16_t(
   return lowest + scale16(bs, highest - lowest);
 }
 
+/** 16-bit sine oscillating lowest..highest at a Q8.8 BPM -- WLED beatsin88_t. */
+export function beatsin88_t(
+  bpm88: number,
+  now: number,
+  lowest = 0,
+  highest = 65535,
+  timebase = 0,
+  phase = 0,
+): number {
+  const beat = beat88(bpm88, now, timebase);
+  const bs = u16(sin16_t(u16(beat + phase)) + 32768);
+  return lowest + scale16(bs, highest - lowest);
+}
+
+/** S-curve ease, uint8 in/out -- FastLED ease8InOutCubic (fastled_slim.cpp). */
+function ease8InOutCubic(i: number): number {
+  const ii = u8(i) * u8(i);
+  const factor = (3 << 8) - (u8(i) << 1); // 3 - 2i, Q8
+  return (ii * factor) >>> 16;
+}
+
+/** Cubic-eased triangle wave, uint8 in/out -- FastLED cubicwave8. */
+export function cubicwave8(inp: number): number {
+  return ease8InOutCubic(triwave8(inp));
+}
+
 // --- packed-color helpers (uint32 0xWWRRGGBB), ported from WLED colors.cpp ---
 
 export const BLACK = 0x000000;
@@ -266,6 +292,35 @@ export function fast_color_scale(c: number, scale: number): number {
   const rb = (((c & TWO_CH) * s) >>> 8) & TWO_CH;
   const wg = ((((c >>> 8) & TWO_CH) * s) >>> 8) & TWO_CH;
   return ((rb | ((wg << 8) >>> 0)) & 0xffffffff) >>> 0;
+}
+
+/** Sum of R/G/B on a packed color, /3 -- FastLED CRGB::getAverageLight(). */
+export function averageLight(c: number): number {
+  return ((R(c) + G(c) + B(c)) * 21846) >>> 16;
+}
+
+// --- inverse gamma (WLED colors.h/.cpp NeoGammaWLEDMethod) ------------------
+// WLED builds gammaT_inv as a 256-entry LUT from the *device's* gamma setting
+// (gammaCorrectVal, default 2.2) via calcGammaTable(); this sim has no device
+// gamma setting to reconcile, so it computes the same formula on the fly at
+// the firmware default (2.2) rather than faking a table for an unset device.
+const GAMMA_DEFAULT = 2.2;
+
+/** WLED gamma8inv (NeoGammaWLEDMethod::rawInverseGamma8), at gamma 2.2. */
+export function gamma8inv(val: number): number {
+  const v = u8(val);
+  if (v === 0) return 0;
+  return Math.round(((v - 0.5) / 255) ** (1 / GAMMA_DEFAULT) * 255);
+}
+
+/** WLED gamma32inv (NeoGammaWLEDMethod::inverseGamma32) -- per-channel gamma8inv. */
+export function gamma32inv(c: number): number {
+  return rgbw32(
+    gamma8inv(R(c)),
+    gamma8inv(G(c)),
+    gamma8inv(B(c)),
+    gamma8inv(W(c)),
+  );
 }
 
 // --- palette lookup (WLED ColorFromPalette) ---------------------------------
