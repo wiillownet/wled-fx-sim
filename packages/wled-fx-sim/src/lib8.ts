@@ -179,6 +179,19 @@ export function cubicwave8(inp: number): number {
   return ease8InOutCubic(triwave8(inp));
 }
 
+/** S-curve ease, uint8 in/out -- FastLED ease8InOutQuad (fastled_slim.cpp). */
+function ease8InOutQuad(i: number): number {
+  let j = u8(i);
+  if (j & 0x80) j = 255 - j;
+  const jj = (j * j) >>> 7;
+  return i & 0x80 ? 255 - jj : jj;
+}
+
+/** Quadratic-eased triangle wave, uint8 in/out -- FastLED quadwave8. */
+export function quadwave8(inp: number): number {
+  return ease8InOutQuad(triwave8(inp));
+}
+
 // --- packed-color helpers (uint32 0xWWRRGGBB), ported from WLED colors.cpp ---
 
 export const BLACK = 0x000000;

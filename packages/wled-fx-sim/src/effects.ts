@@ -25,8 +25,10 @@ import {
   cubicwave8,
   gamma32inv,
   gamma8inv,
+  hsv2rgb_rainbow,
   qadd8,
   qsub8,
+  quadwave8,
   rgbw32,
   scale16,
   scale8,
@@ -34,6 +36,9 @@ import {
   sin16_t as sin16,
   sin8_t as sin8,
   triwave16,
+  R,
+  G,
+  B,
   type RGB,
 } from './lib8.js';
 
@@ -972,10 +977,9 @@ function modeSunrise(seg: Segment): void {
   }
 }
 
-// --- Colorwaves (67) -----------------------------------------------------------
-// mode_colorwaves_pride_base(isPride2015), specialized for isPride2015=false
-// (Pride 2015 is fx 63, not ported) -- the CHSV/gamma32inv branch it would take
-// is dead code for this id, so it's omitted.
+// --- Colorwaves (67) / Pride 2015 (63) ---------------------------------------
+// Shared base (WLED mode_colorwaves_pride_base) -- Pride 2015 takes the
+// CHSV + gamma32inv branch that was dead code while only Colorwaves was ported.
 function blendPixelColor(
   seg: Segment,
   i: number,
@@ -985,19 +989,22 @@ function blendPixelColor(
   seg.setPixelColor(i, color_blend(seg.getPixelColor(i), color, blend));
 }
 
-function modeColorwaves(seg: Segment): void {
+function colorwavesPrideBase(seg: Segment, isPride2015: boolean): void {
   const duration = 10 + seg.speed;
   let sPseudotime = seg.step;
   let sHue16 = seg.aux0 & 0xffff;
 
+  const sat8 = isPride2015 ? beatsin88_t(87, seg.now, 220, 250) : 255;
   const brightdepth = beatsin88_t(341, seg.now, 96, 224);
   const brightnessthetainc16 = beatsin88_t(203, seg.now, 25 * 256, 40 * 256);
   const msmultiplier = beatsin88_t(147, seg.now, 23, 60);
 
   let hue16 = sHue16;
-  const hueinc16 = Math.trunc(
-    (beatsin88_t(113, seg.now, 60, 300) * seg.intensity * 10) / 255,
-  );
+  const hueinc16 = isPride2015
+    ? beatsin88_t(113, seg.now, 1, 3000)
+    : Math.trunc(
+        (beatsin88_t(113, seg.now, 60, 300) * seg.intensity * 10) / 255,
+      );
 
   sPseudotime += duration * msmultiplier;
   sHue16 = (sHue16 + duration * beatsin88_t(400, seg.now, 5, 9)) & 0xffff;
@@ -1005,8 +1012,13 @@ function modeColorwaves(seg: Segment): void {
 
   for (let i = 0; i < seg.length; i++) {
     hue16 = (hue16 + hueinc16) & 0xffff;
-    const h16_128 = hue16 >> 7;
-    const hue8 = h16_128 & 0x100 ? 255 - (h16_128 >> 1) : h16_128 >> 1;
+    let hue8: number;
+    if (isPride2015) {
+      hue8 = (hue16 >> 8) & 0xff;
+    } else {
+      const h16_128 = hue16 >> 7;
+      hue8 = h16_128 & 0x100 ? 255 - (h16_128 >> 1) : h16_128 >> 1;
+    }
 
     brightnesstheta16 += brightnessthetainc16;
     const b16 = sin16(brightnesstheta16 & 0xffff) + 32768;
@@ -1014,16 +1026,33 @@ function modeColorwaves(seg: Segment): void {
     let bri8 = Math.trunc((bri16 * brightdepth) / 65536);
     bri8 = (bri8 + (255 - brightdepth)) & 0xff;
 
-    blendPixelColor(
-      seg,
-      i,
-      seg.color_from_palette(hue8 & 0xff, false, false, 0, bri8),
-      128,
-    );
+    if (isPride2015) {
+      blendPixelColor(
+        seg,
+        i,
+        gamma32inv(hsv2rgb_rainbow(hue8, sat8, bri8)),
+        64,
+      );
+    } else {
+      blendPixelColor(
+        seg,
+        i,
+        seg.color_from_palette(hue8 & 0xff, false, false, 0, bri8),
+        128,
+      );
+    }
   }
 
   seg.step = sPseudotime;
   seg.aux0 = sHue16;
+}
+
+function modeColorwaves(seg: Segment): void {
+  colorwavesPrideBase(seg, false);
+}
+
+function modePride2015(seg: Segment): void {
+  colorwavesPrideBase(seg, true);
 }
 
 // --- Aurora (38) ---------------------------------------------------------------
@@ -1409,6 +1438,455 @@ function modePacifica(seg: Segment): void {
   }
 }
 
+// --- Juggle (64) --------------------------------------------------------------
+function orColor(a: number, b: number): number {
+  return rgbw32(R(a) | R(b), G(a) | G(b), B(a) | B(b));
+}
+
+function modeJuggle(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  seg.fadeToBlackBy(192 - Math.trunc((3 * seg.intensity) / 4));
+  let dothue = 0;
+  for (let i = 0; i < 8; i++) {
+    const index = beatsin88_t(
+      (16 + seg.speed) * (i + 7),
+      seg.now,
+      0,
+      seg.length - 1,
+    );
+    const base = seg.getPixelColor(index);
+    const add =
+      seg.palette === 0
+        ? hsv2rgb_rainbow(dothue, 220, 255)
+        : colorFromPalette(seg.getCurrentPalette(), dothue, 255);
+    seg.setPixelColor(index, orColor(base, add));
+    dothue = (dothue + 32) & 0xff;
+  }
+}
+
+// --- Bpm (68) ------------------------------------------------------------------
+function modeBpm(seg: Segment): void {
+  const stp = Math.trunc(seg.now / 20) & 0xff;
+  const beat = beatsin8_t(seg.speed, seg.now, 64, 255);
+  for (let i = 0; i < seg.length; i++) {
+    seg.setPixelColor(
+      i,
+      seg.color_from_palette(
+        (stp + i * 2) & 0xff,
+        false,
+        false,
+        0,
+        (beat - stp + i * 10) & 0xff,
+      ),
+    );
+  }
+}
+
+// --- Sinelon / Sinelon Dual / Sinelon Rainbow (92/93/94) ---------------------
+function sinelonBase(seg: Segment, dual: boolean, rainbow = false): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  seg.fade_out(seg.intensity);
+  const pos = beatsin16_t(
+    Math.trunc(seg.speed / 10),
+    seg.now,
+    0,
+    seg.length - 1,
+  );
+  if (seg.call === 0) seg.aux0 = pos;
+  let color1 = seg.color_from_palette(pos, true, false, 0);
+  let color2 = seg.color(2);
+  if (rainbow) color1 = seg.color_wheel((pos & 0x07) * 32);
+  seg.setPixelColor(pos, color1);
+  if (dual) {
+    if (!color2) color2 = seg.color_from_palette(pos, true, false, 0);
+    if (rainbow) color2 = color1;
+    seg.setPixelColor(seg.length - 1 - pos, color2);
+  }
+  if (seg.aux0 !== pos) {
+    if (seg.aux0 < pos) {
+      for (let i = seg.aux0; i < pos; i++) {
+        seg.setPixelColor(i, color1);
+        if (dual) seg.setPixelColor(seg.length - 1 - i, color2);
+      }
+    } else {
+      for (let i = seg.aux0; i > pos; i--) {
+        seg.setPixelColor(i, color1);
+        if (dual) seg.setPixelColor(seg.length - 1 - i, color2);
+      }
+    }
+    seg.aux0 = pos;
+  }
+}
+
+function modeSinelon(seg: Segment): void {
+  sinelonBase(seg, false);
+}
+
+function modeSinelonDual(seg: Segment): void {
+  sinelonBase(seg, true);
+}
+
+function modeSinelonRainbow(seg: Segment): void {
+  sinelonBase(seg, false, true);
+}
+
+// --- Traffic Light (35) --------------------------------------------------------
+function modeTrafficLight(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  for (let i = 0; i < seg.length; i++) {
+    seg.setPixelColor(i, seg.color_from_palette(i, true, false, 1));
+  }
+  let mdelay = 500;
+  for (let i = 0; i < seg.length - 2; i += 3) {
+    switch (seg.aux0) {
+      case 0:
+        seg.setPixelColor(i, 0x00ff0000);
+        mdelay = 150 + 100 * (255 - seg.speed);
+        break;
+      case 1:
+        seg.setPixelColor(i, 0x00ff0000);
+        mdelay = 150 + 20 * (255 - seg.speed);
+        seg.setPixelColor(i + 1, 0x00eecc00);
+        break;
+      case 2:
+        seg.setPixelColor(i + 2, 0x0000ff00);
+        mdelay = 150 + 100 * (255 - seg.speed);
+        break;
+      case 3:
+        seg.setPixelColor(i + 1, 0x00eecc00);
+        mdelay = 150 + 20 * (255 - seg.speed);
+        break;
+    }
+  }
+  if (seg.now - seg.step > mdelay) {
+    seg.aux0++;
+    if (seg.aux0 === 1 && seg.intensity > 140) seg.aux0 = 2;
+    if (seg.aux0 > 3) seg.aux0 = 0;
+    seg.step = seg.now;
+  }
+}
+
+// --- Gradient (46) / Loading (47) ---------------------------------------------
+function gradientBase(seg: Segment, loading: boolean): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const counter = (seg.now * ((seg.speed >> 2) + 1)) & 0xffff;
+  let pp = (counter * seg.length) >>> 16;
+  if (seg.call === 0) pp = 0;
+  // Source's `1 + loading ? a : b` parses as `(1+loading) ? a : b` under C++
+  // precedence, always truthy -- brd is always intensity/2 regardless of
+  // `loading`. A real quirk in WLED's own gradient_base(), kept faithfully.
+  const brd = Math.trunc(seg.intensity / 2);
+  const p1 = pp - seg.length;
+  const p2 = pp + seg.length;
+
+  for (let i = 0; i < seg.length; i++) {
+    let val: number;
+    if (loading) {
+      val = Math.abs((i > pp ? p2 : pp) - i);
+    } else {
+      val = Math.min(
+        Math.abs(pp - i),
+        Math.min(Math.abs(p1 - i), Math.abs(p2 - i)),
+      );
+    }
+    val = brd > val ? Math.trunc((val * 255) / brd) : 255;
+    seg.setPixelColor(
+      i,
+      color_blend(
+        seg.color(0),
+        seg.color_from_palette(i, true, false, 1),
+        val & 0xff,
+      ),
+    );
+  }
+}
+
+function modeGradient(seg: Segment): void {
+  gradientBase(seg, false);
+}
+
+function modeLoading(seg: Segment): void {
+  gradientBase(seg, true);
+}
+
+// --- Colorful (34) ---------------------------------------------------------
+function modeColorful(seg: Segment): void {
+  let numColors = 4;
+  const cols = [0x00ff0000, 0x00eebb00, 0x0000ee00, 0x000077cc, 0, 0, 0, 0, 0];
+
+  if (seg.intensity > 160 || seg.palette) {
+    if (!seg.palette) {
+      numColors = 3;
+      for (let i = 0; i < 3; i++) cols[i] = seg.color(i);
+    } else {
+      let fac = 80;
+      if (seg.palette === 52) {
+        numColors = 5;
+        fac = 61;
+      }
+      for (let i = 0; i < numColors; i++) {
+        cols[i] = seg.color_from_palette(i * fac, false, true, 255);
+      }
+    }
+  } else if (seg.intensity < 80) {
+    cols[0] = 0x00ff8040;
+    cols[1] = 0x00e5d241;
+    cols[2] = 0x0077ff77;
+    cols[3] = 0x0077f0f0;
+  }
+
+  for (let i = numColors; i < numColors * 2 - 1; i++)
+    cols[i] = cols[i - numColors];
+
+  const cycleTime = 50 + 8 * (255 - seg.speed);
+  const it = Math.trunc(seg.now / cycleTime);
+  if (it !== seg.step) {
+    if (seg.speed > 0) seg.aux0++;
+    if (seg.aux0 >= numColors) seg.aux0 = 0;
+    seg.step = it;
+  }
+
+  for (let i = 0; i < seg.length; i += numColors) {
+    for (let j = 0; j < numColors; j++)
+      seg.setPixelColor(i + j, cols[seg.aux0 + j]);
+  }
+}
+
+// --- Sine (108) ----------------------------------------------------------------
+function modeSinewave(seg: Segment): void {
+  const colorIndex = Math.trunc(seg.now / 32);
+  seg.step += Math.trunc(seg.speed / 16);
+  const freq = Math.trunc(seg.intensity / 4);
+  for (let i = 0; i < seg.length; i++) {
+    const pixBri = cubicwave8(i * freq + seg.step);
+    seg.setPixelColor(
+      i,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(
+          Math.trunc((i * colorIndex) / 255),
+          false,
+          false,
+          0,
+        ),
+        pixBri,
+      ),
+    );
+  }
+}
+
+// --- Washing Machine (113) ------------------------------------------------------
+function tristateSquare8(
+  x: number,
+  pulsewidth: number,
+  attdec: number,
+): number {
+  let a = 127;
+  let xx = x & 0xff;
+  if (xx > 127) {
+    a = -127;
+    xx -= 127;
+  }
+  if (xx < attdec) return Math.trunc((xx * a) / attdec);
+  if (xx < pulsewidth - attdec) return a;
+  if (xx < pulsewidth) return Math.trunc(((pulsewidth - xx) * a) / attdec);
+  return 0;
+}
+
+function modeWashingMachine(seg: Segment): void {
+  const speed = tristateSquare8((seg.now >> 7) & 0xff, 90, 15);
+  seg.step += Math.trunc((speed * 2048) / (512 - seg.speed));
+  const term = Math.trunc(seg.intensity / 25) + 1;
+  for (let i = 0; i < seg.length; i++) {
+    const col = sin8(
+      (Math.trunc((term * 255 * i) / seg.length) + (seg.step >> 7)) & 0xff,
+    );
+    seg.setPixelColor(i, seg.color_from_palette(col, false, false, 3));
+  }
+}
+
+// --- Flow (110) ------------------------------------------------------------
+function modeFlow(seg: Segment): void {
+  // Firmware has no SEGLEN<=1 guard here, but zoneLen would divide by zero at
+  // length 1 -- guarded to satisfy this sim's universal length-1 contract
+  // rather than replicate what would be undefined behavior on a real device.
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  let counter = 0;
+  if (seg.speed !== 0) {
+    counter = (seg.now * ((seg.speed >> 2) + 1)) >>> 0;
+    counter = counter >>> 8;
+  }
+
+  const maxZones = Math.trunc(seg.length / 6);
+  let zones = (seg.intensity * maxZones) >> 8;
+  if (zones & 1) zones++;
+  if (zones < 2) zones = 2;
+  const zoneLen = Math.max(1, Math.trunc(seg.length / zones));
+  const requiredZones = Math.trunc((seg.length + zoneLen - 1) / zoneLen);
+  zones = requiredZones + 2;
+  const offset = Math.trunc((seg.length - zones * zoneLen) / 2);
+
+  for (let z = 0; z < zones; z++) {
+    const pos = offset + z * zoneLen;
+    for (let i = 0; i < zoneLen; i++) {
+      const colorIndex = (Math.trunc((i * 255) / zoneLen) - counter) & 0xff;
+      // SEGMENT.reverse has no sim equivalent (no per-segment display
+      // orientation modeled) -- treated as always false.
+      const led = z & 1 ? i : zoneLen - 1 - i;
+      seg.setPixelColor(
+        pos + led,
+        seg.color_from_palette(colorIndex, false, true, 255),
+      );
+    }
+  }
+}
+
+// --- Percent (98) ----------------------------------------------------------
+function modePercent(seg: Segment): void {
+  const percent = Math.min(200, Math.max(0, seg.intensity));
+  const activeLeds =
+    percent < 100
+      ? Math.round((seg.length * percent) / 100)
+      : Math.round((seg.length * (200 - percent)) / 100);
+  let size = 1 + ((seg.speed * seg.length) >> 11);
+  if (seg.speed === 255) size = 255;
+
+  if (percent <= 100) {
+    for (let i = 0; i < seg.length; i++) {
+      if (i < seg.aux1) {
+        seg.setPixelColor(
+          i,
+          seg.check1
+            ? seg.color_from_palette(
+                map(percent, 0, 100, 0, 255),
+                false,
+                false,
+                0,
+              )
+            : seg.color_from_palette(i, true, false, 0),
+        );
+      } else {
+        seg.setPixelColor(i, seg.color(1));
+      }
+    }
+  } else {
+    for (let i = 0; i < seg.length; i++) {
+      if (i < seg.length - seg.aux1) {
+        seg.setPixelColor(i, seg.color(1));
+      } else {
+        seg.setPixelColor(
+          i,
+          seg.check1
+            ? seg.color_from_palette(
+                map(percent, 100, 200, 255, 0),
+                false,
+                false,
+                0,
+              )
+            : seg.color_from_palette(i, true, false, 0),
+        );
+      }
+    }
+  }
+
+  if (activeLeds > seg.aux1) {
+    seg.aux1 += size;
+    if (seg.aux1 > activeLeds) seg.aux1 = activeLeds;
+  } else if (activeLeds < seg.aux1) {
+    if (seg.aux1 > size) seg.aux1 -= size;
+    else seg.aux1 = 0;
+    if (seg.aux1 < activeLeds) seg.aux1 = activeLeds;
+  }
+}
+
+// --- Blends (115) ------------------------------------------------------------
+function modeBlends(seg: Segment): void {
+  const pixelLen = Math.min(255, seg.length);
+  const buf = seg.allocateData(4 * (pixelLen + 1));
+  const pixels = new Uint32Array(buf.buffer, buf.byteOffset, pixelLen + 1);
+  const blendSpeed = map(seg.intensity, 0, 255, 10, 128);
+  let shift = ((seg.now * ((seg.speed >> 3) + 1)) >>> 0) >>> 8;
+
+  for (let i = 0; i < pixelLen; i++) {
+    pixels[i] = color_blend(
+      pixels[i],
+      seg.color_from_palette(
+        shift + quadwave8((i + 1) * 16),
+        false,
+        false,
+        255,
+      ),
+      blendSpeed,
+    );
+    shift += 3;
+  }
+
+  let offset = 0;
+  for (let i = 0; i < seg.length; i++) {
+    seg.setPixelColor(i, pixels[offset++]);
+    if (offset >= pixelLen) offset = 0;
+  }
+}
+
+// --- Lightning (57) --------------------------------------------------------
+function modeLightning(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const ledstart = seg.rng.random16(seg.length);
+  const ledlen = 1 + seg.rng.random16(seg.length - ledstart);
+  let bri = Math.trunc(255 / seg.rng.random8(1, 3));
+
+  if (seg.aux1 === 0) {
+    seg.aux1 = seg.rng.random8(4, 4 + Math.trunc(seg.intensity / 20));
+    seg.aux1 *= 2;
+    bri = 52;
+    seg.aux0 = 200;
+  }
+
+  if (!seg.check2) seg.fill(seg.color(1));
+
+  if (seg.aux1 > 3 && !(seg.aux1 & 1)) {
+    for (let i = ledstart; i < ledstart + ledlen; i++) {
+      seg.setPixelColor(i, seg.color_from_palette(i, true, false, 0, bri));
+    }
+    seg.aux1--;
+    seg.step = seg.now;
+  } else if (seg.now - seg.step > seg.aux0) {
+    seg.aux1--;
+    if (seg.aux1 < 2) seg.aux1 = 0;
+    seg.aux0 = 50 + seg.rng.random8(100);
+    if (seg.aux1 === 2) {
+      seg.aux0 = seg.rng.random8(255 - seg.speed) * 100;
+    }
+    seg.step = seg.now;
+  }
+}
+
+// --- Flow Stripe (179) -----------------------------------------------------
+function modeFlowStripe(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const hl = Math.trunc((seg.length * 10) / 13);
+  const hue = Math.trunc(seg.now / (seg.speed + 1)) & 0xff;
+  const t = Math.trunc(seg.now / (Math.trunc(seg.intensity / 8) + 1));
+
+  for (let i = 0; i < seg.length; i++) {
+    let c = Math.trunc((Math.abs(i - hl) * 127) / hl);
+    c = sin8(c & 0xff);
+    c = sin8((Math.trunc(c / 2) + t) & 0xff);
+    const b = sin8((c + Math.trunc(t / 8)) & 0xff);
+    seg.setPixelColor(
+      i,
+      seg.color_from_palette((b + hue) & 0xff, false, true, 3),
+    );
+  }
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -1448,4 +1926,21 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   97: modePlasma,
   101: modePacifica,
   104: modeSunrise,
+  34: modeColorful,
+  35: modeTrafficLight,
+  46: modeGradient,
+  47: modeLoading,
+  57: modeLightning,
+  63: modePride2015,
+  64: modeJuggle,
+  68: modeBpm,
+  92: modeSinelon,
+  93: modeSinelonDual,
+  94: modeSinelonRainbow,
+  98: modePercent,
+  108: modeSinewave,
+  110: modeFlow,
+  113: modeWashingMachine,
+  115: modeBlends,
+  179: modeFlowStripe,
 };

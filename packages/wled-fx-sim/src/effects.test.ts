@@ -98,8 +98,9 @@ describe.each(portedFxIds())('effect %i contract', (fxId) => {
 });
 
 describe('animated effects change over time', () => {
-  // Solid (0) is intentionally static; everything else should move.
-  const animated = portedFxIds().filter((id) => id !== 0);
+  // Solid (0) is intentionally static. Percent (98) at ix=200 saturates to
+  // 0% fill from frame 0 (its own math, not a port bug) -- also static here.
+  const animated = portedFxIds().filter((id) => id !== 0 && id !== 98);
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {
       length: LEN,
@@ -304,5 +305,128 @@ describe('spot checks against known behavior', () => {
     const frame0Str = JSON.stringify(frame0);
     const frame2000Str = JSON.stringify(sim.frame(2000));
     expect(frame2000Str).not.toBe(frame0Str);
+  });
+
+  it('Pride 2015 (63) shows multiple distinct hues across the strip', () => {
+    const sim = createEffectSim(63, { length: LEN, sx: 128, ix: 128 });
+    const buf = sim.frame(2000);
+    const uniqueColors = new Set(buf.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(3);
+  });
+
+  it('Juggle (64) lights a handful of dots against a mostly-dark strip', () => {
+    const sim = createEffectSim(64, {
+      length: 60,
+      sx: 200,
+      colors: [[0, 0, 0], BLACK_RGB, BLACK_RGB],
+    });
+    const buf = sim.frame(500);
+    const lit = buf.filter((px) => px[0] + px[1] + px[2] > 100);
+    expect(lit.length).toBeGreaterThan(0);
+    expect(lit.length).toBeLessThan(60);
+  });
+
+  it('Bpm (68) pulses brightness to the beat over time', () => {
+    const sim = createEffectSim(68, {
+      length: LEN,
+      sx: 120,
+      colors: [[255, 200, 100], BLACK_RGB, BLACK_RGB],
+    });
+    let minLum = Infinity;
+    let maxLum = 0;
+    for (let t = 0; t < 4000; t += 40) {
+      const lum = sim.frame(t)[0].reduce((s, c) => s + c, 0);
+      minLum = Math.min(minLum, lum);
+      maxLum = Math.max(maxLum, lum);
+    }
+    expect(maxLum).toBeGreaterThan(minLum);
+  });
+
+  it('Sinelon (92) moves its bright dot along the strip over time', () => {
+    const sim = createEffectSim(92, {
+      length: 40,
+      sx: 128,
+      ix: 64,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const brightestIndex = (buf: RGB[]) =>
+      buf.reduce(
+        (best, px, i) =>
+          px[0] + px[1] + px[2] > buf[best][0] + buf[best][1] + buf[best][2]
+            ? i
+            : best,
+        0,
+      );
+    const i1 = brightestIndex(sim.frame(0));
+    const i2 = brightestIndex(sim.frame(3000));
+    expect(i1).not.toBe(i2);
+  });
+
+  it('Traffic Light (35) cycles between red, amber and green', () => {
+    const sim = createEffectSim(35, {
+      length: 12,
+      sx: 255, // max speed -> shortest per-state dwell (~150ms), several
+      // full cycles fit inside the sampling window below.
+      colors: [[10, 10, 10], BLACK_RGB, BLACK_RGB],
+    });
+    let sawRed = false;
+    let sawAmber = false;
+    let sawGreen = false;
+    for (let t = 0; t < 3000; t += 20) {
+      for (const px of sim.frame(t)) {
+        if (px[0] > 200 && px[1] < 50 && px[2] < 50) sawRed = true;
+        if (px[0] > 200 && px[1] > 150 && px[2] < 50) sawAmber = true;
+        if (px[1] > 200 && px[0] < 50 && px[2] < 50) sawGreen = true;
+      }
+    }
+    expect(sawRed).toBe(true);
+    expect(sawAmber).toBe(true);
+    expect(sawGreen).toBe(true);
+  });
+
+  it('Colorful (34) shows multiple distinct color blocks', () => {
+    const sim = createEffectSim(34, { length: 20, sx: 128, ix: 200 });
+    const buf = sim.frame(0);
+    const uniqueColors = new Set(buf.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(1);
+  });
+
+  it('Washing Machine (113) shifts its hue pattern over time', () => {
+    const sim = createEffectSim(113, { length: LEN, sx: 128, ix: 128 });
+    const frame0 = JSON.stringify(sim.frame(0));
+    const frame3000 = JSON.stringify(sim.frame(3000));
+    expect(frame3000).not.toBe(frame0);
+  });
+
+  it('Percent (98) at 50% fills roughly half the strip', () => {
+    const sim = createEffectSim(98, {
+      length: 40,
+      sx: 255,
+      ix: 50,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let lit = 0;
+    for (const px of sim.frame(2000)) {
+      if (px[0] + px[1] + px[2] > 30) lit++;
+    }
+    expect(lit).toBeGreaterThan(10);
+    expect(lit).toBeLessThan(30);
+  });
+
+  it('Lightning (57) has both bright flash frames and quiet (background) frames', () => {
+    const sim = createEffectSim(57, {
+      length: LEN,
+      sx: 255, // max speed -> minimal inter-strike delay, more flashes/window
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawFlash = false;
+    let sawQuiet = false;
+    for (let t = 0; t < 4000; t += 15) {
+      const lum = sim.frame(t).reduce((s, px) => s + px[0] + px[1] + px[2], 0);
+      if (lum > 100) sawFlash = true;
+      if (lum === 0) sawQuiet = true;
+    }
+    expect(sawFlash).toBe(true);
+    expect(sawQuiet).toBe(true);
   });
 });
