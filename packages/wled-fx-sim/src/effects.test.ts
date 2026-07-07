@@ -100,7 +100,10 @@ describe.each(portedFxIds())('effect %i contract', (fxId) => {
 describe('animated effects change over time', () => {
   // Solid (0) is intentionally static. Percent (98) at ix=200 saturates to
   // 0% fill from frame 0 (its own math, not a port bug) -- also static here.
-  const animated = portedFxIds().filter((id) => id !== 0 && id !== 98);
+  // Solid Pattern (83/84) and Spots (85) have no seg.now dependency at all --
+  // genuinely time-invariant configurable patterns, same category as Solid.
+  const staticIds = new Set([0, 98, 83, 84, 85]);
+  const animated = portedFxIds().filter((id) => !staticIds.has(id));
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {
       length: LEN,
@@ -525,5 +528,103 @@ describe('spot checks against known behavior', () => {
     const buf = sim.frame(500);
     const lit = buf.filter((px) => px[0] + px[1] + px[2] > 0);
     expect(lit.length).toBeGreaterThan(15);
+  });
+
+  it('Ripple (79) eventually shows a ripple against the background', () => {
+    const sim = createEffectSim(79, {
+      length: 40,
+      sx: 128,
+      ix: 220,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawRipple = false;
+    for (let t = 0; t < 4000; t += 25) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 60)) sawRipple = true;
+    }
+    expect(sawRipple).toBe(true);
+  });
+
+  it('Two Dots (50) lights two distinct groups on opposite sides', () => {
+    const sim = createEffectSim(50, {
+      length: 40,
+      sx: 128,
+      ix: 20,
+      colors: [RED, GREEN, BLACK_RGB],
+    });
+    const buf = sim.frame(0);
+    const litIdx = buf
+      .map((px, i) => (px[0] + px[1] + px[2] > 20 ? i : -1))
+      .filter((i) => i >= 0);
+    expect(litIdx.length).toBeGreaterThan(0);
+    const spread = Math.max(...litIdx) - Math.min(...litIdx);
+    expect(spread).toBeGreaterThan(10);
+  });
+
+  it('Rain (43) shifts a spark position along the strip over time', () => {
+    const sim = createEffectSim(43, {
+      length: 30,
+      sx: 200,
+      ix: 200,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const frame0 = JSON.stringify(sim.frame(0));
+    const frame2000 = JSON.stringify(sim.frame(2000));
+    expect(frame2000).not.toBe(frame0);
+  });
+
+  it('Twinklecat (81) differs from Twinklefox (80) under the same params', () => {
+    const params = {
+      length: 40,
+      sx: 128,
+      ix: 128,
+      colors: [[80, 120, 255], [4, 4, 8], BLACK_RGB] as RGB[],
+    };
+    const cat = createEffectSim(81, params);
+    const fox = createEffectSim(80, params);
+    let sawDifference = false;
+    for (let t = 0; t < 3000; t += 50) {
+      if (JSON.stringify(cat.frame(t)) !== JSON.stringify(fox.frame(t))) {
+        sawDifference = true;
+      }
+    }
+    expect(sawDifference).toBe(true);
+  });
+
+  it('Heartbeat (100) pulses brightness with a lub-dub double-beat', () => {
+    const sim = createEffectSim(100, {
+      length: LEN,
+      sx: 100,
+      colors: [[255, 200, 100], BLACK_RGB, BLACK_RGB],
+    });
+    let minLum = Infinity;
+    let maxLum = 0;
+    for (let t = 0; t < 4000; t += 20) {
+      const lum = sim.frame(t)[0].reduce((s, c) => s + c, 0);
+      minLum = Math.min(minLum, lum);
+      maxLum = Math.max(maxLum, lum);
+    }
+    expect(maxLum).toBeGreaterThan(minLum);
+  });
+
+  it('Railway (78) reverses its ramp direction over a long window', () => {
+    const sim = createEffectSim(78, { length: LEN, sx: 128, ix: 200, pal: 26 });
+    const early = JSON.stringify(sim.frame(500));
+    const late = JSON.stringify(sim.frame(8000));
+    expect(late).not.toBe(early);
+  });
+
+  it('Chunchun (111) spreads bird positions across the strip', () => {
+    const sim = createEffectSim(111, {
+      length: 50,
+      sx: 128,
+      ix: 200,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const buf = sim.frame(1000);
+    const litIdx = buf
+      .map((px, i) => (px[0] + px[1] + px[2] > 30 ? i : -1))
+      .filter((i) => i >= 0);
+    expect(litIdx.length).toBeGreaterThan(0);
   });
 });

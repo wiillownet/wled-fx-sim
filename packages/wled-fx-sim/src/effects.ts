@@ -38,6 +38,7 @@ import {
   sin16_t as sin16,
   sin8_t as sin8,
   triwave16,
+  triwave8,
   R,
   G,
   B,
@@ -799,7 +800,12 @@ function modeColortwinkle(seg: Segment): void {
 
 // --- Twinklefox (80) ---------------------------------------------------------
 // TwinkleFOX by Mark Kriegsman: https://gist.github.com/kriegsman/756ea6dcae8e30845b5a
-function twinklefoxOneTwinkle(seg: Segment, ms: number, salt: number): RGB {
+function twinklefoxOneTwinkle(
+  seg: Segment,
+  ms: number,
+  salt: number,
+  cat: boolean,
+): RGB {
   const ticks = Math.trunc(ms / seg.aux0);
   const fastcycle8 = ticks & 0xff;
   let slowcycle16 = (ticks >> 8) + salt;
@@ -812,7 +818,12 @@ function twinklefoxOneTwinkle(seg: Segment, ms: number, salt: number): RGB {
   let bright = 0;
   if (Math.trunc((slowcycle8 & 0x0e) / 2) < twinkleDensity) {
     const ph = fastcycle8;
-    if (ph < 86) {
+    if (cat) {
+      // Twinklecat: LEDs snap on and fade off (or, with the reverse
+      // checkbox, fade on and snap off) instead of vanilla's asymmetric
+      // triangle wave.
+      bright = seg.check2 ? ph : 255 - ph;
+    } else if (ph < 86) {
       bright = ph * 3;
     } else {
       const ph2 = ph - 86;
@@ -838,7 +849,7 @@ function twinklefoxOneTwinkle(seg: Segment, ms: number, salt: number): RGB {
   return [(c >>> 16) & 0xff, (c >>> 8) & 0xff, c & 0xff];
 }
 
-function modeTwinklefox(seg: Segment): void {
+function twinklefoxBase(seg: Segment, cat: boolean): void {
   if (seg.speed > 100) seg.aux0 = 3 + ((255 - seg.speed) >> 3);
   else seg.aux0 = 22 + ((100 - seg.speed) >> 1);
 
@@ -862,7 +873,7 @@ function modeTwinklefox(seg: Segment): void {
       ((seg.now * myspeedmultiplierQ5_3) >> 3) + myclockoffset16;
     const myunique8 = prng16 >> 8;
 
-    const [cr, cg, cb] = twinklefoxOneTwinkle(seg, myclock30, myunique8);
+    const [cr, cg, cb] = twinklefoxOneTwinkle(seg, myclock30, myunique8, cat);
     const c = rgbw32(cr, cg, cb);
     const cbright = averageLight(c);
     const deltabright = cbright - backgroundBrightness;
@@ -874,6 +885,14 @@ function modeTwinklefox(seg: Segment): void {
       seg.setPixelColor(i, bg);
     }
   }
+}
+
+function modeTwinklefox(seg: Segment): void {
+  twinklefoxBase(seg, false);
+}
+
+function modeTwinklecat(seg: Segment): void {
+  twinklefoxBase(seg, true);
 }
 
 // --- Candle (88) --------------------------------------------------------------
@@ -2383,6 +2402,418 @@ function modeTwinkleup(seg: Segment): void {
   }
 }
 
+// --- Ripple (79) / Ripple Rainbow (99) -----------------------------------------
+interface RippleDrop {
+  state: number;
+  pos: number;
+  color: number;
+}
+
+const MAX_RIPPLES = 100; // firmware's ESP32 default; no device memory ceiling here
+const rippleState = new WeakMap<Segment, RippleDrop[]>();
+
+function rippleBase(seg: Segment, blurAmount = 0): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const maxRipples = Math.min(1 + (seg.length >> 2), MAX_RIPPLES);
+  let ripples = rippleState.get(seg);
+  if (!ripples || ripples.length !== maxRipples) {
+    ripples = Array.from({ length: maxRipples }, () => ({
+      state: 0,
+      pos: 0,
+      color: 0,
+    }));
+    rippleState.set(seg, ripples);
+  }
+
+  for (const ripple of ripples) {
+    if (ripple.state) {
+      const rippledecay = (seg.speed >> 4) + 1;
+      const rippleorigin = ripple.pos;
+      const col = seg.color_from_palette(ripple.color, false, false, 255);
+      const propagation =
+        (Math.trunc(ripple.state / rippledecay) - 1) * (seg.speed + 1);
+      const propI = propagation >> 8;
+      const propF = propagation & 0xff;
+      const amp =
+        ripple.state < 17
+          ? triwave8(((ripple.state - 1) * 8) & 0xff)
+          : map(ripple.state, 17, 255, 255, 2);
+
+      const left = rippleorigin - propI - 1;
+      const right = rippleorigin + propI + 2;
+      for (let v = 0; v < 4; v++) {
+        const mag = scale8(cubicwave8(((propF >> 2) + v * 64) & 0xff), amp);
+        seg.setPixelColor(
+          left + v,
+          color_blend(seg.getPixelColor(left + v), col, mag),
+        );
+        seg.setPixelColor(
+          right - v,
+          color_blend(seg.getPixelColor(right - v), col, mag),
+        );
+      }
+
+      const next = ripple.state + rippledecay;
+      ripple.state = next > 254 ? 0 : next;
+    } else if (seg.rng.random16(5100 + 10000) <= seg.intensity) {
+      ripple.state = 1;
+      ripple.pos = seg.rng.random16(seg.length);
+      ripple.color = seg.rng.random8();
+    }
+  }
+
+  seg.blur(blurAmount);
+}
+
+function modeRipple(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  if (seg.custom1 || seg.check2) {
+    seg.fade_out(250);
+  } else {
+    seg.fill(seg.color(1));
+  }
+  rippleBase(seg, seg.custom1 >> 1);
+}
+
+function modeRippleRainbow(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  if (seg.call === 0) {
+    seg.aux0 = seg.rng.random8();
+    seg.aux1 = seg.rng.random8();
+  }
+  if (seg.aux0 === seg.aux1) {
+    seg.aux1 = seg.rng.random8();
+  } else if (seg.aux1 > seg.aux0) {
+    seg.aux0 = (seg.aux0 + 1) & 0xff;
+  } else {
+    seg.aux0 = (seg.aux0 - 1) & 0xff;
+  }
+  seg.fill(color_blend(seg.color_wheel(seg.aux0), BLACK, 235));
+  rippleBase(seg);
+}
+
+// --- Two Dots (50) --------------------------------------------------------
+function modeTwoDots(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  const delay = 1 + Math.trunc((FRAMETIME << 3) / seg.length);
+  const it = Math.trunc(seg.now / map(seg.speed, 0, 255, delay << 4, delay));
+  const offset = it % seg.length;
+  let width = (seg.length * (seg.intensity + 1)) >> 9;
+  if (!width) width = 1;
+  if (!seg.check2) seg.fill(seg.color(2));
+  const color1 = seg.color(0);
+  const color2 = seg.color(1) === seg.color(2) ? color1 : seg.color(1);
+  for (let i = 0; i < width; i++) {
+    const indexR = (offset + i) % seg.length;
+    const indexB = (offset + i + (seg.length >> 1)) % seg.length;
+    seg.setPixelColor(indexR, color1);
+    seg.setPixelColor(indexB, color2);
+  }
+}
+
+// --- Dynamic (7) / Dynamic Smooth (117) ----------------------------------------
+function modeDynamicImpl(seg: Segment, smooth: boolean): void {
+  const data = seg.allocateData(seg.length);
+
+  if (seg.call === 0) {
+    for (let i = 0; i < seg.length; i++) data[i] = seg.rng.random8();
+  }
+
+  const cycleTime = 50 + (255 - seg.speed) * 15;
+  const it = Math.trunc(seg.now / cycleTime);
+  if (it !== seg.step && seg.speed !== 0) {
+    for (let i = 0; i < seg.length; i++) {
+      if (seg.rng.random8() <= seg.intensity) data[i] = seg.rng.random8();
+    }
+    seg.step = it;
+  }
+
+  if (smooth) {
+    for (let i = 0; i < seg.length; i++) {
+      blendPixelColor(seg, i, seg.color_wheel(data[i]), 16);
+    }
+  } else {
+    for (let i = 0; i < seg.length; i++) {
+      seg.setPixelColor(i, seg.color_wheel(data[i]));
+    }
+  }
+}
+
+function modeDynamic(seg: Segment): void {
+  modeDynamicImpl(seg, seg.check1);
+}
+
+function modeDynamicSmooth(seg: Segment): void {
+  modeDynamicImpl(seg, true);
+}
+
+// --- Rain (43) -------------------------------------------------------------
+function modeRain(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  seg.step += FRAMETIME;
+  const speedFormulaL = 5 + Math.trunc((50 * (255 - seg.speed)) / seg.length);
+  if (seg.call && seg.step > speedFormulaL) {
+    seg.step = 1;
+    const ctemp = seg.getPixelColor(0);
+    for (let i = 0; i < seg.length - 1; i++) {
+      seg.setPixelColor(i, seg.getPixelColor(i + 1));
+    }
+    seg.setPixelColor(seg.length - 1, ctemp);
+    seg.aux0++;
+    seg.aux1++;
+    if (seg.aux0 === 0) seg.aux0 = 0xffff;
+    // Firmware's own source sets aux0 (not aux1) on this line too -- a real
+    // copy-paste quirk in mode_rain(), preserved faithfully.
+    if (seg.aux1 === 0) seg.aux0 = 0xffff;
+    if (seg.aux0 >= seg.length) seg.aux0 = 0;
+    if (seg.aux1 >= seg.length) seg.aux1 = 0;
+  }
+  modeFireworks(seg);
+}
+
+// --- Lake (75) ---------------------------------------------------------------
+function modeLake(seg: Segment): void {
+  const sp = Math.trunc(seg.speed / 10);
+  const wave1 = beatsin8_t(sp + 2, seg.now, -64, 64);
+  const wave2 = beatsin8_t(sp + 1, seg.now, -64, 64);
+  const wave3 = beatsin8_t(sp + 2, seg.now, 0, 80);
+
+  for (let i = 0; i < seg.length; i++) {
+    const index =
+      Math.trunc(cos8((i * 15 + wave1) & 0xff) / 2) +
+      Math.trunc(cubicwave8((i * 23 + wave2) & 0xff) / 2);
+    const lum = index > wave3 ? index - wave3 : 0;
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0, lum));
+  }
+}
+
+// --- Heartbeat (100) ------------------------------------------------------
+function modeHeartbeat(seg: Segment): void {
+  const bpm = 40 + (seg.speed >> 3);
+  const msPerBeat = Math.trunc(60000 / bpm);
+  const secondBeat = Math.trunc(msPerBeat / 3);
+  let briLower = seg.aux1;
+  const beatTimer = seg.now - seg.step;
+
+  briLower = Math.trunc((briLower * 2042) / (2048 + seg.intensity));
+  seg.aux1 = briLower;
+
+  if (beatTimer > secondBeat && !seg.aux0) {
+    seg.aux1 = 0xffff;
+    seg.aux0 = 1;
+  }
+  if (beatTimer > msPerBeat) {
+    seg.aux1 = 0xffff;
+    seg.aux0 = 0;
+    seg.step = seg.now;
+  }
+
+  for (let i = 0; i < seg.length; i++) {
+    seg.setPixelColor(
+      i,
+      color_blend(
+        seg.color_from_palette(i, true, false, 0),
+        seg.color(1),
+        255 - (seg.aux1 >> 8),
+      ),
+    );
+  }
+}
+
+// --- Chunchun (111) ------------------------------------------------------
+function modeChunchun(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  seg.fade_out(254);
+  let counter = (seg.now * (6 + (seg.speed >> 4))) >>> 0;
+  const numBirds = 2 + (seg.length >> 3);
+  const span = Math.trunc((seg.intensity << 8) / numBirds);
+
+  for (let i = 0; i < numBirds; i++) {
+    counter = (counter - span) >>> 0;
+    const megumin = (sin16(counter & 0xffff) + 0x8000) & 0xffff;
+    let bird = Math.trunc((megumin * seg.length) / 65536);
+    bird = Math.min(Math.max(bird, 0), seg.length - 1);
+    seg.setPixelColor(
+      bird,
+      seg.color_from_palette(Math.trunc((i * 255) / numBirds), false, false, 0),
+    );
+  }
+}
+
+// --- Railway (78) --------------------------------------------------------
+function modeRailway(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  const dur = (256 - seg.speed) * 40;
+  const rampdur = (dur * seg.intensity) >> 8;
+  if (seg.step > dur) {
+    seg.step = 0;
+    seg.aux0 = seg.aux0 ? 0 : 1;
+  }
+  let pos = 255;
+  if (rampdur !== 0) {
+    const p0 = Math.trunc((seg.step * 255) / rampdur);
+    if (p0 < 255) pos = p0;
+  }
+  if (seg.aux0) pos = 255 - pos;
+  for (let i = 0; i < seg.length; i += 2) {
+    seg.setPixelColor(i, seg.color_from_palette(255 - pos, false, false, 255));
+    if (i < seg.length - 1) {
+      seg.setPixelColor(i + 1, seg.color_from_palette(pos, false, false, 255));
+    }
+  }
+  seg.step += FRAMETIME;
+}
+
+// --- Solid Pattern (83) / Solid Pattern Tri (84) -------------------------
+function modeStaticPattern(seg: Segment): void {
+  const lit = 1 + seg.speed;
+  const unlit = 1 + seg.intensity;
+  let drawingLit = true;
+  let cnt = 0;
+
+  for (let i = 0; i < seg.length; i++) {
+    seg.setPixelColor(
+      i,
+      drawingLit ? seg.color_from_palette(i, true, false, 0) : seg.color(1),
+    );
+    cnt++;
+    if (cnt >= (drawingLit ? lit : unlit)) {
+      cnt = 0;
+      drawingLit = !drawingLit;
+    }
+  }
+}
+
+function modeTriStaticPattern(seg: Segment): void {
+  const segSize = (seg.intensity >> 5) + 1;
+  let currSeg = 0;
+  let currSegCount = 0;
+
+  for (let i = 0; i < seg.length; i++) {
+    if (currSeg % 3 === 0) seg.setPixelColor(i, seg.color(0));
+    else if (currSeg % 3 === 1) seg.setPixelColor(i, seg.color(1));
+    else seg.setPixelColor(i, seg.color(2));
+    currSegCount += 1;
+    if (currSegCount >= segSize) {
+      currSeg += 1;
+      currSegCount = 0;
+    }
+  }
+}
+
+// --- Spots (85) / Spots Fade (86) -----------------------------------------
+function spotsBase(seg: Segment, threshold: number): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  if (!seg.check2) seg.fill(seg.color(1));
+
+  const maxZones = seg.length >> 2;
+  const zones = 1 + ((seg.intensity * maxZones) >> 8);
+  const zoneLen = Math.trunc(seg.length / zones);
+  const offset = (seg.length - zones * zoneLen) >> 1;
+
+  for (let z = 0; z < zones; z++) {
+    const pos = offset + z * zoneLen;
+    for (let i = 0; i < zoneLen; i++) {
+      const wave = triwave16(Math.trunc((i * 0xffff) / zoneLen));
+      if (wave > threshold) {
+        const index = pos + i;
+        const s = Math.trunc(((wave - threshold) * 255) / (0xffff - threshold));
+        seg.setPixelColor(
+          index,
+          color_blend(
+            seg.color_from_palette(index, true, false, 0),
+            seg.color(1),
+            255 - s,
+          ),
+        );
+      }
+    }
+  }
+}
+
+function modeSpots(seg: Segment): void {
+  spotsBase(seg, (255 - seg.speed) << 8);
+}
+
+function modeSpotsFade(seg: Segment): void {
+  const counter = (seg.now * ((seg.speed >> 2) + 8)) >>> 0;
+  const t = triwave16(counter & 0xffff);
+  const tr = (t >> 1) + (t >> 2);
+  spotsBase(seg, tr);
+}
+
+// --- Phased (105) ----------------------------------------------------------
+function modePhased(seg: Segment): void {
+  const allfreq = 16;
+  // Firmware bit-reinterprets SEGENV.step as a float to smuggle a float
+  // through a uint32 field; seg.step is already a plain number, so it holds
+  // the float phase directly -- no reinterpretation needed.
+  let phase = seg.step;
+  const cutOff = 255 - seg.intensity;
+  const modValDefault = 5; // moder=1 (Phased Noise, fx 109) needs perlin8; not ported
+
+  let index = Math.trunc(seg.now / 64);
+  phase += seg.speed / 32;
+
+  for (let i = 0; i < seg.length; i++) {
+    const modVal = modValDefault;
+    let val = (i + 1) * allfreq;
+    val += Math.trunc((phase * ((i % modVal) + 1)) / 2);
+    let b = cubicwave8(val & 0xff);
+    b = b > cutOff ? b - cutOff : 0;
+    seg.setPixelColor(
+      i,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(index & 0xff, false, false, 0),
+        b,
+      ),
+    );
+    index += Math.trunc(256 / seg.length);
+    if (seg.length > 256) index++;
+  }
+
+  seg.step = phase;
+}
+
+// --- Saw (16) ----------------------------------------------------------------
+function modeSaw(seg: Segment): void {
+  const xScale = seg.intensity >> 2;
+  const counter = (seg.now * seg.speed) >> 9;
+
+  for (let i = 0; i < seg.length; i++) {
+    let a = (i * xScale - counter) & 0xff;
+    if (a < 16) {
+      a = 192 + a * 8;
+    } else {
+      a = map(a, 16, 255, 64, 192);
+    }
+    a = 255 - a;
+    const s = sin8(a & 0xff);
+    seg.setPixelColor(
+      i,
+      color_blend(seg.color(1), seg.color_from_palette(i, true, false, 0), s),
+    );
+  }
+}
+
+// --- Wavesins (184) ------------------------------------------------------
+function modeWavesins(seg: Segment): void {
+  for (let i = 0; i < seg.length; i++) {
+    const bri = sin8((Math.trunc(seg.now / 4) + i * seg.intensity) & 0xff);
+    const index = beatsin8_t(
+      seg.speed,
+      seg.now,
+      seg.custom1,
+      seg.custom1 + seg.custom2,
+      0,
+      i * (seg.custom3 << 3),
+    );
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0, bri));
+  }
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -2446,4 +2877,22 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   91: modeBouncingBalls,
   95: modePopcorn,
   106: modeTwinkleup,
+  7: modeDynamic,
+  16: modeSaw,
+  43: modeRain,
+  50: modeTwoDots,
+  75: modeLake,
+  78: modeRailway,
+  79: modeRipple,
+  81: modeTwinklecat,
+  83: modeStaticPattern,
+  84: modeTriStaticPattern,
+  85: modeSpots,
+  86: modeSpotsFade,
+  99: modeRippleRainbow,
+  100: modeHeartbeat,
+  105: modePhased,
+  111: modeChunchun,
+  117: modeDynamicSmooth,
+  184: modeWavesins,
 };
