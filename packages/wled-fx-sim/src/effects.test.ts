@@ -105,7 +105,12 @@ describe('animated effects change over time', () => {
   // Palette (65)'s rotation/shift only read seg.now when its Animate
   // Rotation/Animate Shift checkboxes are on; both default false here (this
   // harness never sets check1/check2), so it's static under these params too.
-  const staticIds = new Set([0, 98, 83, 84, 85, 65]);
+  // Noise 1 (70) hits color_from_palette's palette-0 shortcut (same one Fairy/
+  // Colorwaves/Plasma rely on a real palette to see past): every pixel calls
+  // it with mcol<3 and the default pbri (255), so at the test's default
+  // "Default" palette it always returns the raw, unchanging segment color --
+  // genuinely animated only once a real palette is set (see its spot check).
+  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70]);
   const animated = portedFxIds().filter((id) => !staticIds.has(id));
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {
@@ -785,5 +790,83 @@ describe('spot checks against known behavior', () => {
       if (buf.some((px) => px[0] + px[1] + px[2] > 200)) sawBurst = true;
     }
     expect(sawBurst).toBe(true);
+  });
+
+  it('Theater Rainbow (14) cycles through different hues over time (unlike Theater Chase)', () => {
+    const params = {
+      length: 30,
+      sx: 200,
+      ix: 64,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB] as RGB[],
+    };
+    const rainbow = createEffectSim(14, params);
+    const chase = createEffectSim(13, params);
+    let sawDifference = false;
+    for (let t = 0; t < 3000; t += 50) {
+      if (JSON.stringify(rainbow.frame(t)) !== JSON.stringify(chase.frame(t))) {
+        sawDifference = true;
+      }
+    }
+    expect(sawDifference).toBe(true);
+  });
+
+  it('Android (27) slides its lit arc around the strip over time', () => {
+    const sim = createEffectSim(27, {
+      length: 30,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const frame0 = JSON.stringify(sim.frame(0));
+    const frame3000 = JSON.stringify(sim.frame(3000));
+    expect(frame3000).not.toBe(frame0);
+  });
+
+  it('Noise 1 (70) varies spatially and over time once a real palette is set', () => {
+    // palette 0 ("Default") short-circuits color_from_palette to the raw
+    // segment color regardless of index -- same as Fairy/Colorwaves/Plasma,
+    // needs an actual palette selected to see the noise pattern (see the
+    // staticIds comment above for why the generic contract test excludes it).
+    const sim = createEffectSim(70, { length: 30, sx: 128, pal: 26 });
+    const frame0 = sim.frame(0);
+    const uniqueAcrossStrip = new Set(frame0.map((px) => px.join(',')));
+    expect(uniqueAcrossStrip.size).toBeGreaterThan(1);
+    const frame0Str = JSON.stringify(frame0);
+    const frame3000Str = JSON.stringify(sim.frame(3000));
+    expect(frame3000Str).not.toBe(frame0Str);
+  });
+
+  it('Fireworks 1D (90) eventually launches a bright flare or spark', () => {
+    const sim = createEffectSim(90, {
+      length: 40,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawBright = false;
+    for (let t = 0; t < 6000; t += 30) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 200)) sawBright = true;
+    }
+    expect(sawBright).toBe(true);
+  });
+
+  it('TV Simulator (116) fills the strip with one flickering color that changes over time', () => {
+    const sim = createEffectSim(116, { length: 20, sx: 128, ix: 128 });
+    let sawVariation = false;
+    let prev = JSON.stringify(sim.frame(0)[0]);
+    for (let t = 50; t < 6000; t += 50) {
+      const buf = sim.frame(t);
+      expect(
+        buf.every(
+          (px) =>
+            px[0] === buf[0][0] && px[1] === buf[0][1] && px[2] === buf[0][2],
+        ),
+      ).toBe(true);
+      const cur = JSON.stringify(buf[0]);
+      if (cur !== prev) sawVariation = true;
+      prev = cur;
+    }
+    expect(sawVariation).toBe(true);
   });
 });

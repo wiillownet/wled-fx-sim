@@ -553,3 +553,95 @@ export class PRNG {
     return this.random8(b - a) + a;
   }
 }
+
+// --- 3D fixed-point gradient noise (WLED util.cpp `perlin16`, by @dedehai) --
+// WLED 16.0 ships its own fixed-point gradient-noise implementation (a fast
+// hash-based scheme, not the classic permutation-table Perlin, and not a
+// literal copy of FastLED's inoise -- fcn_declare.h aliases this `inoise16`
+// for FastLED-legacy call sites). Ported bit-for-bit, including the 32-bit
+// hash multiplies (via Math.imul, matching C's uint32 wraparound), since the
+// visual character depends on the exact gradient hash, not just "some" noise.
+const PERLIN_SHIFT = 1;
+
+function hashToGradient(h: number): number {
+  return (h & 0x03) - 2;
+}
+
+function gradient3D(
+  x0: number,
+  dx: number,
+  y0: number,
+  dy: number,
+  z0: number,
+  dz: number,
+): number {
+  let h =
+    Math.imul(x0, 0x27d4eb2d) ^
+    Math.imul(y0, 0xb5297a4d) ^
+    Math.imul(z0, 0x1b56c4e9);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x92c3412b);
+  h ^= h >>> 13;
+  const gx = hashToGradient(h);
+  const gy = hashToGradient(h >>> (1 + PERLIN_SHIFT));
+  const gz = hashToGradient(h >>> (1 + 2 * PERLIN_SHIFT));
+  return ((gx * dx + gy * dy + gz * dz) * 85) >> (8 + PERLIN_SHIFT);
+}
+
+/** t*(3-2t) fixed-point smoothstep; the uint32 wraparound is load-bearing. */
+function smoothstep(t: number): number {
+  const tSquared = (t * t) >>> 16;
+  const factor = (3 << 16) - (t << 1);
+  return (tSquared * factor) >>> 18;
+}
+
+function lerpPerlin(a: number, b: number, t: number): number {
+  return a + (Math.imul(b - a, t) >> 14);
+}
+
+function perlin3DRaw(x: number, y: number, z: number): number {
+  const x0 = x >>> 16;
+  const y0 = y >>> 16;
+  const z0 = z >>> 16;
+  const x1 = x0 + 1;
+  const y1 = y0 + 1;
+  const z1 = z0 + 1;
+
+  const dx0 = x & 0xffff;
+  const dy0 = y & 0xffff;
+  const dz0 = z & 0xffff;
+  const dx1 = dx0 - 0x10000;
+  const dy1 = dy0 - 0x10000;
+  const dz1 = dz0 - 0x10000;
+
+  const g000 = gradient3D(x0, dx0, y0, dy0, z0, dz0);
+  const g001 = gradient3D(x0, dx0, y0, dy0, z1, dz1);
+  const g010 = gradient3D(x0, dx0, y1, dy1, z0, dz0);
+  const g011 = gradient3D(x0, dx0, y1, dy1, z1, dz1);
+  const g100 = gradient3D(x1, dx1, y0, dy0, z0, dz0);
+  const g101 = gradient3D(x1, dx1, y0, dy0, z1, dz1);
+  const g110 = gradient3D(x1, dx1, y1, dy1, z0, dz0);
+  const g111 = gradient3D(x1, dx1, y1, dy1, z1, dz1);
+
+  const tx = smoothstep(dx0);
+  const ty = smoothstep(dy0);
+  const tz = smoothstep(dz0);
+
+  const nx0 = lerpPerlin(g000, g100, tx);
+  const nx1 = lerpPerlin(g010, g110, tx);
+  const nx2 = lerpPerlin(g001, g101, tx);
+  const nx3 = lerpPerlin(g011, g111, tx);
+  const ny0 = lerpPerlin(nx0, nx1, ty);
+  const ny1 = lerpPerlin(nx2, nx3, ty);
+
+  return lerpPerlin(ny0, ny1, tz);
+}
+
+/**
+ * 3D fixed-point gradient noise, uint16 in/out -- WLED perlin16(x,y,z)
+ * (util.cpp), aliased `inoise16` for FastLED-style call sites. `x`/`y`/`z` are
+ * Q16.16 fixed-point coordinates (the integer part selects a lattice cell).
+ */
+export function inoise16(x: number, y: number, z: number): number {
+  return (((perlin3DRaw(x, y, z) * 1731) >> 10) + 33147) & 0xffff;
+}

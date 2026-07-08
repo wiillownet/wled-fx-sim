@@ -41,6 +41,7 @@ import {
   sin8_t as sin8,
   triwave16,
   triwave8,
+  inoise16,
   R,
   G,
   B,
@@ -281,6 +282,11 @@ function running(
 
 function modeTheaterChase(seg: Segment): void {
   running(seg, seg.color(0), seg.color(1), true);
+}
+
+// --- Theater Rainbow (14, mode_theater_chase_rainbow) -----------------------
+function modeTheaterChaseRainbow(seg: Segment): void {
+  running(seg, seg.color_wheel(seg.step), seg.color(1), true);
 }
 
 // --- Running (15, mode_running_lights via running_base, saw=false) ----------
@@ -3547,11 +3553,363 @@ function modeStarburst(seg: Segment): void {
   }
 }
 
-/**
- * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
- * value is a per-frame function; an id absent here has no simulation yet and
- * the UI falls back to the CSS preview family (see index.ts isPorted).
- */
+// --- Android (27) ------------------------------------------------------------
+// Android boot-spinner: a lit arc that grows/shrinks then slides around the
+// strip. Firmware packs two values into SEGENV.aux1 (size<<1 | shrinking) and
+// keeps a free-running frame counter in a 4-byte SEGENV.data scratch (there's
+// no fourth scalar field alongside aux0/aux1/step, so it needs its own byte
+// scratch the same way Dissolve/Blends back a typed-array view onto seg.data).
+function modeAndroid(seg: Segment): void {
+  const buf = seg.allocateData(4);
+  const counter = new Uint32Array(buf.buffer, buf.byteOffset, 1);
+
+  let size = seg.aux1 >> 1; // upper bits
+  let shrinking = seg.aux1 & 0x01; // lowest bit
+
+  if (seg.now >= seg.step) {
+    seg.step = seg.now + 3 + Math.trunc((8 * (255 - seg.speed)) / seg.length);
+    if (size > Math.trunc((seg.intensity * seg.length) / 255)) shrinking = 1;
+    else if (size < 2) shrinking = 0;
+
+    if (!shrinking) {
+      // growing
+      if (counter[0] % 3 === 1)
+        seg.aux0++; // advance start position
+      else size++;
+    } else {
+      // shrinking
+      seg.aux0++;
+      if (counter[0] % 3 !== 1) size--;
+    }
+
+    seg.aux1 = (size << 1) | shrinking; // save back
+    counter[0]++;
+    if (seg.aux0 >= seg.length) seg.aux0 = 0;
+  }
+
+  const start = seg.aux0;
+  const end = (seg.aux0 + size) % seg.length;
+  for (let i = 0; i < seg.length; i++) {
+    if (
+      (start < end && i >= start && i < end) ||
+      (start >= end && (i >= start || i < end))
+    ) {
+      seg.setPixelColor(i, seg.color(0));
+    } else {
+      seg.setPixelColor(i, seg.color_from_palette(i, true, false, 1));
+    }
+  }
+}
+
+// --- Noise 1 / Noise16_1 (70) -----------------------------------------------
+function modeNoise16_1(seg: Segment): void {
+  const scale = 320; // the "zoom factor" for the noise
+  seg.step += 1 + Math.trunc(seg.speed / 16);
+
+  for (let i = 0; i < seg.length; i++) {
+    const shiftX = beatsin8_t(11, seg.now); // swings @ 17bpm, lowest/highest default 0/255
+    const shiftY = Math.trunc(seg.step / 42);
+    const realX = (i + shiftX) * scale;
+    const realY = (i + shiftY) * scale;
+    const realZ = seg.step;
+    const noise = inoise16(realX, realY, realZ) >>> 8;
+    const index = sin8(noise * 3);
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0));
+  }
+}
+
+// --- Fireworks 1D / "Exploding Fireworks" (90) ------------------------------
+// http://www.anirama.com/1000leds/1d-fireworks/. Shares the shape of the
+// existing Spark struct (pos/vel/colIndex) used by Popcorn/Fireworks/Rain,
+// but needs different fields (a firing-side flag, a fading brightness/tint
+// counter) -- a new interface per the "don't touch the shared Spark type"
+// instruction, not a variant of it. Firmware's only 1D/2D difference is X
+// velocity/position (`is2D() ? ... : 0`); this sim is 1D-only, so those terms
+// are dropped entirely rather than carried around always-zero.
+interface FireworkSpark {
+  pos: number;
+  posX: number; // 0 or 1: which end this flare/spark launched from (1D only)
+  vel: number;
+  col: number; // brightness (flare) / fade-intensity counter (sparks)
+  colIndex: number;
+}
+
+interface FireworksState {
+  sparks: FireworkSpark[]; // sparks[0] doubles as the flare
+  dyingGravity: number;
+}
+
+const fireworksState = new WeakMap<Segment, FireworksState>();
+
+function modeExplodingFireworks(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  const rows = seg.length; // 1D: cols is always 1
+
+  let state = fireworksState.get(seg);
+  if (!state) {
+    // Firmware caps spark count by a device memory budget (FAIR_DATA_PER_SEG)
+    // that scales up further when few segments are active; this sim has no
+    // memory ceiling to reconcile with (same category as Popcorn/Ripple), so
+    // it always uses the uncapped formula (5 + rows/2, cols=1 in 1D) rather
+    // than also computing and min-ing against the device-memory cap.
+    const numSparks = 5 + (rows >> 1);
+    state = {
+      sparks: Array.from({ length: numSparks }, () => ({
+        pos: 0,
+        posX: 0,
+        vel: 0,
+        col: 0,
+        colIndex: 0,
+      })),
+      dyingGravity: 0,
+    };
+    seg.aux0 = 0;
+    fireworksState.set(seg, state);
+  }
+  const { sparks } = state;
+  const flare = sparks[0];
+
+  seg.fade_out(252);
+
+  const gravity = (-0.0004 - seg.speed / 800000) * rows;
+
+  if (seg.aux0 < 2) {
+    // FLARE
+    if (seg.aux0 === 0) {
+      flare.pos = 0;
+      flare.posX = seg.intensity > seg.rng.random8() ? 1 : 0;
+      let peakHeight = 75 + seg.rng.random8(180);
+      peakHeight = (peakHeight * (rows - 1)) >> 8;
+      flare.vel = Math.sqrt(-2 * gravity * peakHeight);
+      flare.col = 255;
+      seg.aux0 = 1;
+    }
+
+    if (flare.vel > 12 * gravity) {
+      const gray = flare.col & 0xff;
+      const idx =
+        flare.posX > 0
+          ? rows - Math.trunc(flare.pos) - 1
+          : Math.trunc(flare.pos);
+      seg.setPixelColor(idx, rgbw32(gray, gray, gray));
+      flare.pos += flare.vel;
+      flare.pos = Math.min(Math.max(flare.pos, 0), rows - 1);
+      flare.vel += gravity;
+      flare.col -= 2;
+    } else {
+      seg.aux0 = 2; // ready to explode
+    }
+  } else if (seg.aux0 < 4) {
+    // Explode! Size proportional to the flare's peak height.
+    let nSparks = Math.trunc(flare.pos) + seg.rng.random8(4);
+    nSparks = Math.max(nSparks, 4);
+    nSparks = Math.min(nSparks, sparks.length);
+
+    if (seg.aux0 === 2) {
+      for (let i = 1; i < nSparks; i++) {
+        sparks[i].pos = flare.pos;
+        sparks[i].posX = flare.posX;
+        sparks[i].vel = seg.rng.random16(20001) / 10000 - 0.9;
+        sparks[i].vel *= rows < 32 ? 0.5 : 1;
+        sparks[i].col = 345;
+        sparks[i].colIndex = seg.rng.random8();
+        sparks[i].vel *= flare.pos / rows;
+        sparks[i].vel *= -gravity * 50;
+      }
+      state.dyingGravity = gravity / 2;
+      seg.aux0 = 3;
+    }
+
+    if (sparks[1].col > 4) {
+      // as long as our known spark is lit, work with all the sparks
+      for (let i = 1; i < nSparks; i++) {
+        sparks[i].pos += sparks[i].vel;
+        sparks[i].vel += state.dyingGravity;
+        if (sparks[i].col > 3) sparks[i].col -= 4;
+
+        if (sparks[i].pos > 0 && sparks[i].pos < rows) {
+          const prog = sparks[i].col;
+          const spColor = seg.palette
+            ? seg.color_wheel(sparks[i].colIndex)
+            : seg.color(0);
+          let c = BLACK;
+          if (prog > 300) {
+            // fade from white to spark color
+            c = color_blend(spColor, WHITE, ((prog - 300) * 5) & 0xff);
+          } else if (prog > 45) {
+            // fade from spark color to black
+            c = color_blend(BLACK, spColor, (prog - 45) & 0xff);
+            const cooling = (300 - prog) >> 5;
+            c = rgbw32(R(c), qsub8(G(c), cooling), qsub8(B(c), cooling * 2));
+          }
+          const idx = sparks[i].posX
+            ? rows - Math.trunc(sparks[i].pos) - 1
+            : Math.trunc(sparks[i].pos);
+          seg.setPixelColor(idx, c);
+        }
+      }
+      if (seg.check3) seg.blur(16);
+      state.dyingGravity *= 0.8; // as sparks burn out they fall slower
+    } else {
+      seg.aux0 = 6 + seg.rng.random8(10); // wait this many frames
+    }
+  } else {
+    seg.aux0--;
+    if (seg.aux0 < 4) seg.aux0 = 0; // back to flare
+  }
+}
+
+// --- TV Simulator (116) -----------------------------------------------------
+// Adapted from "Fake TV Light for Engineers" (Adafruit). A "scene" color
+// random-walks in hue/sat/bri, then cross-fades pixel-to-pixel via a custom
+// constant-brightness HSB->RGB conversion (not this file's hsv2rgb_rainbow --
+// a distinct algorithm from the Adafruit blog post) + forward gamma.
+interface TvSimState {
+  totalTime: number;
+  fadeTime: number;
+  startTime: number;
+  sliderValues: number;
+  sceeneStart: number;
+  sceeneDuration: number;
+  sceeneColorHue: number;
+  sceeneColorSat: number;
+  sceeneColorBri: number;
+  actualColorR: number;
+  actualColorG: number;
+  actualColorB: number;
+  pr: number;
+  pg: number;
+  pb: number;
+}
+
+const tvSimState = new WeakMap<Segment, TvSimState>();
+
+function modeTvSimulator(seg: Segment): void {
+  let s = tvSimState.get(seg);
+  if (!s) {
+    s = {
+      totalTime: 0,
+      fadeTime: 0,
+      startTime: 0,
+      sliderValues: 0,
+      sceeneStart: 0,
+      sceeneDuration: 0,
+      sceeneColorHue: 0,
+      sceeneColorSat: 0,
+      sceeneColorBri: 0,
+      actualColorR: 0,
+      actualColorG: 0,
+      actualColorB: 0,
+      pr: 0,
+      pg: 0,
+      pb: 0,
+    };
+    tvSimState.set(seg, s);
+  }
+
+  const colorSpeed = map(seg.speed, 0, 255, 1, 20);
+  const colorIntensity = map(seg.intensity, 0, 255, 10, 30);
+
+  // Firmware reinitializes the scene timer whenever the speed/intensity
+  // sliders change (not just on call count) -- detected explicitly by
+  // comparing against the last-seen packed slider value, same idiom as the
+  // real mode_tv_simulator().
+  const sliderKey = (seg.speed << 8) | seg.intensity;
+  if (sliderKey !== s.sliderValues) {
+    s.sliderValues = sliderKey;
+    seg.aux1 = 0;
+  }
+
+  // create a new sceene
+  if (seg.now - s.sceeneStart >= s.sceeneDuration || seg.aux1 === 0) {
+    s.sceeneStart = seg.now;
+    s.sceeneDuration = seg.rng.random16(
+      60 * 250 * colorSpeed,
+      60 * 750 * colorSpeed,
+    );
+    s.sceeneColorHue = seg.rng.random16(0, 768);
+    s.sceeneColorSat = seg.rng.random8(100, 130 + colorIntensity);
+    s.sceeneColorBri = seg.rng.random8(200, 240);
+    seg.aux1 = 1;
+    seg.aux0 = 0;
+  }
+
+  // slightly change the color-tone in this sceene
+  if (seg.aux0 === 0) {
+    const j1 = seg.rng.random8(4 * colorIntensity);
+    let hue: number;
+    if (seg.rng.random8() < 128) {
+      hue =
+        j1 < s.sceeneColorHue
+          ? s.sceeneColorHue - j1
+          : 767 - s.sceeneColorHue - j1;
+    } else {
+      hue =
+        j1 + s.sceeneColorHue < 767
+          ? s.sceeneColorHue + j1
+          : s.sceeneColorHue + j1 - 767;
+    }
+
+    const j2 = seg.rng.random8(2 * colorIntensity);
+    const sat = s.sceeneColorSat - j2 < 0 ? 0 : s.sceeneColorSat - j2;
+
+    const j3 = seg.rng.random8(100);
+    const bri = s.sceeneColorBri - j3 < 0 ? 0 : s.sceeneColorBri - j3;
+
+    // constant-brightness HSB->RGB: https://blog.adafruit.com/2012/03/14/constant-brightness-hsb-to-rgb-algorithm/
+    const n = (hue >> 8) % 3;
+    const x = (((((hue & 255) * sat) >> 8) * bri) >> 8) & 0xff;
+    const sBase = (((256 - sat) * bri) >> 8) & 0xff;
+    const temp = [
+      sBase,
+      (x + sBase) & 0xff,
+      (bri - x) & 0xff,
+      sBase,
+      (x + sBase) & 0xff,
+    ];
+    s.actualColorR = temp[n + 2];
+    s.actualColorG = temp[n + 1];
+    s.actualColorB = temp[n];
+  }
+
+  // Apply gamma correction, further expand to 16/16/16
+  const nr = gamma8(s.actualColorR) * 257;
+  const ng = gamma8(s.actualColorG) * 257;
+  const nb = gamma8(s.actualColorB) * 257;
+
+  if (seg.aux0 === 0) {
+    // initialize next iteration
+    seg.aux0 = 1;
+    s.totalTime = seg.rng.random16(250, 2500);
+    s.fadeTime = seg.rng.random16(0, s.totalTime);
+    if (seg.rng.random8(10) < 3) s.fadeTime = 0; // force scene cut 30% of time
+    s.startTime = seg.now;
+  }
+
+  const elapsed = seg.now - s.startTime;
+
+  let r: number;
+  let g: number;
+  let b: number;
+  if (elapsed < s.fadeTime) {
+    r = map(elapsed, 0, s.fadeTime, s.pr, nr);
+    g = map(elapsed, 0, s.fadeTime, s.pg, ng);
+    b = map(elapsed, 0, s.fadeTime, s.pb, nb);
+  } else {
+    r = nr;
+    g = ng;
+    b = nb;
+  }
+
+  seg.fill(rgbw32((r >> 8) & 0xff, (g >> 8) & 0xff, (b >> 8) & 0xff));
+
+  if (elapsed >= s.totalTime) {
+    s.pr = nr;
+    s.pg = ng;
+    s.pb = nb;
+    seg.aux0 = 0;
+  }
+}
 
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
@@ -3643,4 +4001,9 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   89: modeStarburst,
   96: modeDrip,
   103: modeSolidGlitter,
+  14: modeTheaterChaseRainbow, // "Theater Rainbow"
+  27: modeAndroid,
+  70: modeNoise16_1, // "Noise 1"
+  90: modeExplodingFireworks, // "Fireworks 1D"
+  116: modeTvSimulator,
 };
