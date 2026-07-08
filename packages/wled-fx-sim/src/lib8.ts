@@ -106,6 +106,23 @@ export function cos8_t(theta: number): number {
   return sin8_t(u8(theta + 64));
 }
 
+// WLED's `sin_t`/`cos_t` (used by ESP32 float-math effect paths, e.g. mode_palette)
+// are #defined straight to these float wrappers around the sin16_t table
+// (wled00/fcn_declare.h: `#define sin_t sin_approx`, `#define cos_t cos_approx`).
+const RAD_TO_U16 = 0xffff / (2 * Math.PI);
+
+/** WLED sin_approx (wled_math.cpp) -- float sine via the sin16_t table. */
+export function sin_approx(theta: number): number {
+  const scaledTheta = Math.trunc(theta * RAD_TO_U16) & 0xffff;
+  return sin16_t(scaledTheta) / 0x7fff;
+}
+
+/** WLED cos_approx (wled_math.cpp) -- float cosine via the sin16_t table. */
+export function cos_approx(theta: number): number {
+  const scaledTheta = Math.trunc(theta * RAD_TO_U16) & 0xffff;
+  return sin16_t((scaledTheta + 0x4000) & 0xffff) / 0x7fff;
+}
+
 // --- beat / beatsin, ported from WLED util.cpp ------------------------------
 // `now` is passed in (WLED reads the global millis()); timebase is an offset.
 

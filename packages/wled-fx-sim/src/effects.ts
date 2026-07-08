@@ -23,6 +23,7 @@ import {
   color_add,
   color_blend,
   color_fade,
+  cos_approx,
   cubicwave8,
   gamma32inv,
   gamma8,
@@ -34,6 +35,7 @@ import {
   rgbw32,
   scale16,
   scale8,
+  sin_approx,
   cos8_t as cos8,
   sin16_t as sin16,
   sin8_t as sin8,
@@ -109,6 +111,18 @@ function modeBlink(seg: Segment): void {
 
 function modeStrobe(seg: Segment): void {
   blink(seg, seg.color(0), seg.color(1), true, true);
+}
+
+// --- Blink Rainbow (26) / Strobe Rainbow (24) --------------------------------
+// Both are one-liners over the same shared blink() helper: color1 cycles
+// through the rainbow via seg.call (WLED's SEGENV.call, a per-step counter)
+// instead of holding a fixed segment color.
+function modeBlinkRainbow(seg: Segment): void {
+  blink(seg, seg.color_wheel(seg.call & 0xff), seg.color(1), false, false);
+}
+
+function modeStrobeRainbow(seg: Segment): void {
+  blink(seg, seg.color_wheel(seg.call & 0xff), seg.color(1), true, false);
 }
 
 // --- Breathe (2) ------------------------------------------------------------
@@ -2814,6 +2828,372 @@ function modeWavesins(seg: Segment): void {
   }
 }
 
+// --- Halloween Eyes (82) -----------------------------------------------------
+// Single-struct-per-Segment WeakMap state, same tier as Tetrix's TetrisDrop.
+// State values are plain numeric constants (not a TS enum) matching this
+// file's existing style -- no enum is used anywhere else in this module.
+const EYE_INIT_ON = 0;
+const EYE_ON = 1;
+const EYE_BLINK = 2;
+const EYE_INIT_OFF = 3;
+const EYE_OFF = 4;
+const EYE_STATE_COUNT = 5;
+
+interface EyeData {
+  state: number;
+  color: number;
+  startPos: number;
+  duration: number;
+  startTime: number;
+  blinkEndTime: number;
+}
+
+const eyeDataState = new WeakMap<Segment, EyeData>();
+
+function modeHalloweenEyes(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  // strip.isMatrix is always false (1D-only sim) -- maxWidth collapses to
+  // SEGLEN, and the matrix-only SEG_H/offset branch is dead code here.
+  const maxWidth = seg.length;
+  const eyeSpace = Math.max(2, seg.length >> 5);
+  const eyeWidth = eyeSpace >> 1;
+  const eyeLength = 2 * eyeWidth + eyeSpace;
+  if (eyeLength >= maxWidth) return fallbackStatic(seg); // segment too short
+
+  let data = eyeDataState.get(seg);
+  if (seg.call === 0 || !data) {
+    // Fresh allocateData() zero-fills (FX_fcn.cpp allocateData at call==0),
+    // so state starts at 0 (EYE_INIT_ON) same as the real firmware.
+    data = {
+      state: EYE_INIT_ON,
+      color: 0,
+      startPos: 0,
+      duration: 0,
+      startTime: 0,
+      blinkEndTime: 0,
+    };
+    eyeDataState.set(seg, data);
+  }
+
+  if (!seg.check2) seg.fill(seg.color(1)); // fill background
+
+  data.state = data.state % EYE_STATE_COUNT;
+  let duration = Math.max(1, data.duration);
+  const elapsedTime = seg.now - data.startTime;
+
+  // The real firmware's switch deliberately falls through
+  // initializeOn -> on and initializeOff -> off (no `break`) so a freshly
+  // (re)initialized state renders immediately instead of waiting a frame.
+  // Preserved as-is rather than split into clean separate cases.
+  switch (data.state) {
+    case EYE_INIT_ON: {
+      data.startPos = seg.rng.random16(0, maxWidth - eyeLength - 1);
+      data.color = seg.rng.random8();
+      duration = 128 + seg.rng.random16(seg.intensity * 64);
+      data.duration = duration;
+      data.state = EYE_ON;
+    }
+    // falls through
+    case EYE_ON: {
+      const start2ndEye = data.startPos + eyeWidth + eyeSpace;
+      duration = Math.min(duration, 128 + seg.intensity * 64);
+
+      const minimumOnTimeBegin = 1024;
+      const minimumOnTimeEnd = 1024;
+      const fadeInAnimationState = Math.trunc(
+        (elapsedTime * (256 * 8)) / duration,
+      );
+      const backgroundColor = seg.color(1);
+      const eyeColor = seg.color_from_palette(data.color, false, false, 0);
+      let c = eyeColor;
+      if (fadeInAnimationState < 256) {
+        c = color_blend(backgroundColor, eyeColor, fadeInAnimationState & 0xff);
+      } else if (elapsedTime > minimumOnTimeBegin) {
+        const remainingTime =
+          elapsedTime >= duration ? 0 : duration - elapsedTime;
+        if (remainingTime > minimumOnTimeEnd) {
+          if (seg.rng.random8() < 4) {
+            c = backgroundColor;
+            data.state = EYE_BLINK;
+            data.blinkEndTime = seg.now + seg.rng.random8(8, 128);
+          }
+        }
+      }
+
+      if (c !== backgroundColor) {
+        for (let i = 0; i < eyeWidth; i++) {
+          seg.setPixelColor(data.startPos + i, c);
+          seg.setPixelColor(start2ndEye + i, c);
+        }
+      }
+      break;
+    }
+    case EYE_BLINK: {
+      if (seg.now >= data.blinkEndTime) data.state = EYE_ON;
+      break;
+    }
+    case EYE_INIT_OFF: {
+      const eyeOffTimeBase = seg.speed * 128;
+      duration = eyeOffTimeBase + seg.rng.random16(eyeOffTimeBase);
+      data.duration = duration;
+      data.state = EYE_OFF;
+    }
+    // falls through
+    case EYE_OFF: {
+      const eyeOffTimeBase = seg.speed * 128;
+      duration = Math.min(duration, 2 * eyeOffTimeBase);
+      break;
+    }
+    case EYE_STATE_COUNT:
+    default: {
+      data.state = EYE_INIT_ON;
+      break;
+    }
+  }
+
+  if (elapsedTime > duration) {
+    switch (data.state) {
+      case EYE_INIT_ON:
+      case EYE_ON:
+      case EYE_BLINK:
+        data.state = EYE_INIT_OFF;
+        break;
+      case EYE_INIT_OFF:
+      case EYE_OFF:
+      case EYE_STATE_COUNT:
+      default:
+        data.state = EYE_INIT_ON;
+        break;
+    }
+    data.startTime = seg.now;
+  }
+}
+
+// --- Dancing Shadows (112) ---------------------------------------------------
+// Ports the classic per-spotlight-struct implementation (FX.cpp's
+// `#ifdef WLED_PS_DONT_REPLACE_1D_FX` branch) rather than the particle-system
+// replacement in the `#else` branch -- same precedent as batch 2 excluding PS
+// Sparkler: the particle-system engine (FXparticleSystem.h/.cpp) is a whole
+// separate framework not vendored here, so the struct-array version (fully
+// self-contained in FX.cpp) is the one that's actually portable.
+interface Spotlight {
+  speed: number;
+  colorIdx: number;
+  position: number;
+  lastUpdateTime: number;
+  width: number;
+  type: number;
+}
+
+const SPOT_TYPE_SOLID = 0;
+const SPOT_TYPE_GRADIENT = 1;
+const SPOT_TYPE_2X_GRADIENT = 2;
+const SPOT_TYPE_2X_DOT = 3;
+const SPOT_TYPE_3X_DOT = 4;
+const SPOT_TYPE_4X_DOT = 5;
+const SPOT_TYPES_COUNT = 6;
+const SPOT_MAX_COUNT = 49; // firmware's ESP32 default; no device memory ceiling here
+
+const dancingShadowsState = new WeakMap<Segment, Spotlight[]>();
+
+function modeDancingShadows(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const numSpotlights = map(seg.intensity, 0, 255, 2, SPOT_MAX_COUNT);
+  // A settings change (numSpotlights derived from the intensity slider)
+  // forces a full reinit, same as the real firmware's aux0 comparison --
+  // the WeakMap value is rebuilt, not just resized/left stale.
+  const initialize = seg.aux0 !== numSpotlights;
+  seg.aux0 = numSpotlights;
+
+  let spotlights = dancingShadowsState.get(seg);
+  if (initialize || !spotlights || spotlights.length !== numSpotlights) {
+    spotlights = Array.from({ length: numSpotlights }, () => ({
+      speed: 0,
+      colorIdx: 0,
+      position: 0,
+      lastUpdateTime: 0,
+      width: 0,
+      type: 0,
+    }));
+    dancingShadowsState.set(seg, spotlights);
+  }
+
+  seg.fill(BLACK);
+
+  const time = seg.now;
+  let respawn = false;
+
+  for (let i = 0; i < numSpotlights; i++) {
+    const spot = spotlights[i];
+    if (!initialize) {
+      // advance the position of the spotlight
+      const delta = Math.trunc(
+        (time - spot.lastUpdateTime) *
+          (spot.speed * ((1.0 + seg.speed) / 100.0)),
+      );
+      if (Math.abs(delta) >= 1) {
+        spot.position += delta;
+        spot.lastUpdateTime = time;
+      }
+      respawn =
+        (spot.speed > 0.0 && spot.position > seg.length + 2) ||
+        (spot.speed < 0.0 && spot.position < -(spot.width + 2));
+    }
+
+    if (initialize || respawn) {
+      spot.colorIdx = seg.rng.random8();
+      spot.width = seg.rng.random8(1, 10);
+      spot.speed = 1.0 / seg.rng.random8(4, 50);
+
+      if (initialize) {
+        spot.position = seg.rng.random16(seg.length);
+        spot.speed *= seg.rng.random8(2) ? 1.0 : -1.0;
+      } else {
+        if (seg.rng.random8(2)) {
+          spot.position = seg.length + spot.width;
+          spot.speed *= -1.0;
+        } else {
+          spot.position = -spot.width;
+        }
+      }
+      spot.lastUpdateTime = time;
+      spot.type = seg.rng.random8(SPOT_TYPES_COUNT);
+    }
+
+    // mcol=255 (>2) bypasses the "default palette -> raw segment color"
+    // shortcut so spotlights get real per-colorIdx palette variation even
+    // on the default (Party) palette -- same sentinel used by Sunrise (104).
+    const color = seg.color_from_palette(spot.colorIdx, false, false, 255);
+    const start = spot.position;
+
+    if (spot.width <= 1) {
+      if (start >= 0 && start < seg.length) {
+        blendPixelColor(seg, start, color, 128);
+      }
+    } else {
+      switch (spot.type) {
+        case SPOT_TYPE_SOLID:
+          for (let j = 0; j < spot.width; j++) {
+            if (start + j >= 0 && start + j < seg.length) {
+              blendPixelColor(seg, start + j, color, 128);
+            }
+          }
+          break;
+        case SPOT_TYPE_GRADIENT:
+          for (let j = 0; j < spot.width; j++) {
+            if (start + j >= 0 && start + j < seg.length) {
+              blendPixelColor(
+                seg,
+                start + j,
+                color,
+                cubicwave8(map(j, 0, spot.width - 1, 0, 255)),
+              );
+            }
+          }
+          break;
+        case SPOT_TYPE_2X_GRADIENT:
+          for (let j = 0; j < spot.width; j++) {
+            if (start + j >= 0 && start + j < seg.length) {
+              blendPixelColor(
+                seg,
+                start + j,
+                color,
+                cubicwave8(2 * map(j, 0, spot.width - 1, 0, 255)),
+              );
+            }
+          }
+          break;
+        case SPOT_TYPE_2X_DOT:
+          for (let j = 0; j < spot.width; j += 2) {
+            if (start + j >= 0 && start + j < seg.length) {
+              blendPixelColor(seg, start + j, color, 128);
+            }
+          }
+          break;
+        case SPOT_TYPE_3X_DOT:
+          for (let j = 0; j < spot.width; j += 3) {
+            if (start + j >= 0 && start + j < seg.length) {
+              blendPixelColor(seg, start + j, color, 128);
+            }
+          }
+          break;
+        case SPOT_TYPE_4X_DOT:
+          for (let j = 0; j < spot.width; j += 4) {
+            if (start + j >= 0 && start + j < seg.length) {
+              blendPixelColor(seg, start + j, color, 128);
+            }
+          }
+          break;
+      }
+    }
+  }
+}
+
+// --- Palette (65) -------------------------------------------------------
+// ESP32 float-math path only (this sim assumes a float-capable target
+// elsewhere, per decisions.md 2026-07-03). Real firmware treats each
+// *segment* as one row of an imaginary multi-row display
+// (yFrom=yTo=strip.getCurrSegmentId(), rows=strip.getActiveSegmentsNum())
+// so a rotation becomes visible across rows when multiple segments are
+// active. This sim has no multi-segment concept -- strip.getCurrSegmentId()
+// is assumed 0 (same precedent as Fairy/Fairytwinkle/Palette's own mcol=255
+// sibling in Dancing Shadows above), and getActiveSegmentsNum() is assumed 1
+// (same category as nrOfVStrips()==1). rows collapses to 1 and only that
+// single row ever renders -- no visible row rotation, which is the expected
+// single-segment result here, not a bug.
+function modePalette(seg: Segment): void {
+  const cols = seg.length;
+  const rows = 1;
+
+  const inputShift = seg.speed;
+  const inputSize = seg.intensity;
+  const inputRotation = seg.custom1;
+  const inputAnimateShift = seg.check1;
+  const inputAnimateRotation = seg.check2;
+  const inputAssumeSquare = seg.check3;
+
+  const maxAngle = Math.PI / 256;
+  const animatedRotationScale = (2 * Math.PI) / 0xffff;
+
+  const theta = !inputAnimateRotation
+    ? (inputRotation + 128) * maxAngle
+    : ((seg.now * ((inputRotation >> 4) + 1)) & 0xffff) * animatedRotationScale;
+  const sinTheta = sin_approx(theta);
+  const cosTheta = cos_approx(theta);
+
+  const maxX = Math.max(1, cols - 1);
+  const maxY = Math.max(1, rows - 1);
+  const maxXIn = inputAssumeSquare ? maxX : 1;
+  const maxYIn = inputAssumeSquare ? maxY : 1;
+  const maxXOut = !inputAssumeSquare ? maxX : 1;
+  const maxYOut = !inputAssumeSquare ? maxY : 1;
+  const centerX = maxXOut / 2;
+  const centerY = maxYOut / 2;
+  const scale = Math.abs(sinTheta) + (Math.abs(cosTheta) * maxYOut) / maxXOut;
+
+  const y = 0; // yFrom = yTo = strip.getCurrSegmentId(), assumed 0
+  const ytCosTheta = (cosTheta * (y - centerY * maxYIn)) / (maxYIn * scale);
+  for (let x = 0; x < cols; x++) {
+    const xtSinTheta = (sinTheta * (x - centerX * maxXIn)) / (maxXIn * scale);
+    const sourceX = xtSinTheta + ytCosTheta + centerX;
+    let colorIndex = Math.trunc(
+      (Math.min(Math.max(sourceX, 0), maxXOut) * 255) / maxXOut,
+    );
+    if (inputSize <= 128) {
+      colorIndex = Math.trunc((colorIndex * inputSize) / 128);
+    } else {
+      colorIndex = Math.trunc(((inputSize - 112) * colorIndex) / 16);
+    }
+    const paletteOffset = !inputAnimateShift
+      ? inputShift
+      : ((seg.now * ((inputShift >> 3) + 1)) & 0xffff) >> 8;
+    colorIndex -= paletteOffset;
+    seg.setPixelColor(x, seg.color_wheel(colorIndex & 0xff));
+  }
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -2895,4 +3275,9 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   111: modeChunchun,
   117: modeDynamicSmooth,
   184: modeWavesins,
+  24: modeStrobeRainbow,
+  26: modeBlinkRainbow,
+  65: modePalette,
+  82: modeHalloweenEyes,
+  112: modeDancingShadows,
 };

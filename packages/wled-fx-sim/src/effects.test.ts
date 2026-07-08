@@ -102,7 +102,10 @@ describe('animated effects change over time', () => {
   // 0% fill from frame 0 (its own math, not a port bug) -- also static here.
   // Solid Pattern (83/84) and Spots (85) have no seg.now dependency at all --
   // genuinely time-invariant configurable patterns, same category as Solid.
-  const staticIds = new Set([0, 98, 83, 84, 85]);
+  // Palette (65)'s rotation/shift only read seg.now when its Animate
+  // Rotation/Animate Shift checkboxes are on; both default false here (this
+  // harness never sets check1/check2), so it's static under these params too.
+  const staticIds = new Set([0, 98, 83, 84, 85, 65]);
   const animated = portedFxIds().filter((id) => !staticIds.has(id));
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {
@@ -626,5 +629,91 @@ describe('spot checks against known behavior', () => {
       .map((px, i) => (px[0] + px[1] + px[2] > 30 ? i : -1))
       .filter((i) => i >= 0);
     expect(litIdx.length).toBeGreaterThan(0);
+  });
+
+  it('Blink Rainbow (26) cycles hues across its lit frames', () => {
+    const sim = createEffectSim(26, {
+      length: LEN,
+      sx: 200,
+      ix: 128,
+      colors: [
+        [255, 255, 255],
+        [0, 0, 0],
+      ],
+    });
+    const litColors = new Set<string>();
+    let sawDark = false;
+    for (let t = 0; t < 4000; t += 20) {
+      const px = sim.frame(t)[0];
+      const lum = px[0] + px[1] + px[2];
+      if (lum > 30) litColors.add(px.join(','));
+      if (lum === 0) sawDark = true;
+    }
+    expect(litColors.size).toBeGreaterThan(1);
+    expect(sawDark).toBe(true);
+  });
+
+  it('Strobe Rainbow (24) flashes varying rainbow colors against dark', () => {
+    const sim = createEffectSim(24, {
+      length: LEN,
+      sx: 200,
+      colors: [
+        [255, 255, 255],
+        [0, 0, 0],
+      ],
+    });
+    const flashColors = new Set<string>();
+    let sawDark = false;
+    for (let t = 0; t < 4000; t += 5) {
+      const px = sim.frame(t)[0];
+      const lum = px[0] + px[1] + px[2];
+      if (lum > 30) flashColors.add(px.join(','));
+      if (lum === 0) sawDark = true;
+    }
+    expect(flashColors.size).toBeGreaterThan(1);
+    expect(sawDark).toBe(true);
+  });
+
+  it('Halloween Eyes (82) fades a pair of eyes up over time against a dark background', () => {
+    const sim = createEffectSim(82, {
+      length: 60,
+      sx: 128,
+      ix: 200,
+      colors: [[255, 200, 50], BLACK_RGB, BLACK_RGB],
+    });
+    let minLum = Infinity;
+    let maxLum = 0;
+    for (let t = 0; t < 8000; t += 40) {
+      const buf = sim.frame(t);
+      const lum = buf.reduce((s, px) => s + px[0] + px[1] + px[2], 0);
+      minLum = Math.min(minLum, lum);
+      maxLum = Math.max(maxLum, lum);
+    }
+    expect(maxLum).toBeGreaterThan(minLum);
+  });
+
+  it('Dancing Shadows (112) casts moving spotlights against a black background', () => {
+    const sim = createEffectSim(112, {
+      length: 40,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawLit = false;
+    const snapshots = new Set<string>();
+    for (let t = 0; t < 4000; t += 40) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 60)) sawLit = true;
+      snapshots.add(JSON.stringify(buf));
+    }
+    expect(sawLit).toBe(true);
+    expect(snapshots.size).toBeGreaterThan(1);
+  });
+
+  it('Palette (65) spins a palette band across the strip', () => {
+    const sim = createEffectSim(65, { length: 40, sx: 128, ix: 128, pal: 26 });
+    const buf = sim.frame(0);
+    const uniqueColors = new Set(buf.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(3);
   });
 });
