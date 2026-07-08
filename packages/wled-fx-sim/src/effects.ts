@@ -30,6 +30,8 @@ import {
   gamma8,
   gamma8inv,
   hsv2rgb_rainbow,
+  hsv2rgb_spectrum,
+  beat88,
   inoise8,
   perlin8,
   qadd8,
@@ -5031,6 +5033,60 @@ function modeTricolorWipe(seg: Segment): void {
   }
 }
 
+// --- Color Clouds (218) -----------------------------------------------------
+/**
+ * Soft drifting Perlin clouds of color. Two independent 2D Perlin fields: one
+ * gates brightness (the "clouds"), one drives hue. custom1/2/3 (cloud density /
+ * colorfulness / gaps) aren't exposed to the sim harness, so they default 0 --
+ * hue is then spatially uniform but still drifts in time, brightness still
+ * varies per pixel. `cozy` (check3) folds the hue into a soft palette-edge sweep.
+ */
+function modeColorClouds(seg: Segment): void {
+  if (seg.call === 0) {
+    seg.aux0 = seg.rng.random16();
+    seg.aux1 = seg.rng.random16();
+  }
+  const volX0 = seg.aux0;
+  const hueX0 = seg.aux1;
+  const hueOffset0 = (volX0 + hueX0) & 0xff;
+
+  const cozy = seg.check3;
+  const volSpeed = 1 + seg.speed;
+  const hueSpeed = 1 + seg.intensity;
+  const volSqueeze = 8 + seg.custom1;
+  const hueSqueeze = seg.custom2;
+  const volCutoff = 12500 + seg.custom3 * 900;
+  const volSaturate = 52000;
+
+  const now = seg.now;
+  const volT = Math.trunc((now * volSpeed) / 8);
+  const hueT = Math.trunc((now * hueSpeed) / 8);
+  const hueOffset = beat88(64, now) >> 8;
+
+  for (let i = 0; i < seg.length; i++) {
+    const volX = i * volSqueeze * 64;
+    let vol = inoise16xy(volX0 + volX, volT);
+    vol = map(vol, volCutoff, volSaturate, 0, 255);
+    vol = Math.max(0, Math.min(255, vol));
+
+    const hueX = i * hueSqueeze * 8;
+    let hue = (inoise16xy(hueX0 + hueX, hueT) >> 7) & 0xff;
+    hue = (hue + hueOffset0) & 0xff;
+    hue = (hue + hueOffset) & 0xff;
+    if (cozy) hue = cos8(128 + (hue >> 1));
+
+    let pixel: number;
+    if (seg.palette) {
+      pixel = seg.color_from_palette(hue, false, true, 0, vol);
+    } else {
+      pixel = hsv2rgb_spectrum((hue & 0xff) << 8, 255, vol);
+    }
+
+    if (R(pixel) + G(pixel) + B(pixel) <= 2) pixel = 0;
+    seg.setPixelColor(i, pixel);
+  }
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -5112,6 +5168,7 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   111: modeChunchun,
   117: modeDynamicSmooth,
   184: modeWavesins,
+  218: modeColorClouds,
   24: modeStrobeRainbow,
   26: modeBlinkRainbow,
   65: modePalette,

@@ -1244,4 +1244,20 @@ describe('spot checks against known behavior', () => {
     expect(sawLit).toBe(true);
     expect(snapshots.size).toBeGreaterThan(1);
   });
+
+  it('Color Clouds (218) drifts a per-pixel Perlin brightness field over time', () => {
+    // Default palette 0 -> spectrum path; custom2 defaults 0 so hue is spatially
+    // uniform but brightness (the clouds) varies per pixel and the whole field
+    // drifts frame to frame.
+    const sim = createEffectSim(218, { length: 40, sx: 96, ix: 96 });
+    const first = sim.frame(1000);
+    const brightness = first.map((px) => px[0] + px[1] + px[2]);
+    expect(new Set(brightness).size).toBeGreaterThan(3);
+
+    const snapshots = new Set<string>();
+    for (let t = 0; t < 4000; t += 40) {
+      snapshots.add(JSON.stringify(sim.frame(t)));
+    }
+    expect(snapshots.size).toBeGreaterThan(1);
+  });
 });

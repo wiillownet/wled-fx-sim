@@ -506,6 +506,62 @@ export function hsv2rgb_rainbow(h: number, s: number, v: number): number {
   return rgbw32(r & 0xff, g & 0xff, b & 0xff, 0);
 }
 
+/**
+ * Spectrum HSV->RGB (wled00/colors.cpp hsv2rgb_spectrum). Even hue spacing,
+ * unlike the perceptually-weighted rainbow variant. `h` is a 16-bit hue: CHSV32
+ * stores hue at 16-bit precision, so an 8-bit hue maps in as `h << 8`.
+ */
+export function hsv2rgb_spectrum(h: number, s: number, v: number): number {
+  const hue = u16(h);
+  const sat = u8(s);
+  const val = u8(v);
+
+  if (sat === 0) return rgbw32(val, val, val, 0);
+
+  const region = (hue * 6) >>> 16; // hue / (65536 / 6)
+  const remainder = (hue - region * 10923) * 6; // 10923 = 65536 / 6
+
+  const p = (val * (255 - sat)) >>> 8;
+  const q = (val * (255 - ((sat * remainder) >>> 16))) >>> 8;
+  const t = (val * (255 - ((sat * (65535 - remainder)) >>> 16))) >>> 8;
+  let r: number;
+  let g: number;
+  let b: number;
+  switch (region) {
+    case 0:
+      r = val;
+      g = t;
+      b = p;
+      break;
+    case 1:
+      r = q;
+      g = val;
+      b = p;
+      break;
+    case 2:
+      r = p;
+      g = val;
+      b = t;
+      break;
+    case 3:
+      r = p;
+      g = q;
+      b = val;
+      break;
+    case 4:
+      r = t;
+      g = p;
+      b = val;
+      break;
+    default:
+      r = val;
+      g = p;
+      b = q;
+      break;
+  }
+  return rgbw32(r & 0xff, g & 0xff, b & 0xff, 0);
+}
+
 // --- deterministic PRNG (WLED prng.h) ---------------------------------------
 
 /**
