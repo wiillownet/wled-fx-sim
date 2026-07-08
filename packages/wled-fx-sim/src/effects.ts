@@ -3194,6 +3194,365 @@ function modePalette(seg: Segment): void {
   }
 }
 
+// --- ICU (58) ----------------------------------------------------------------
+// A plain state machine driving a pair of "eyes" that dart to random
+// positions -- no allocateData() at all. State packs into seg.step (upper 16
+// bits = state enum, lower 16 bits = next-update time), mirroring firmware's
+// bit-packed SEGENV.step, plus aux0 (move target) / aux1 (current position).
+// Firmware has no SEGLEN<=1 guard here either; the math holds up fine at
+// length 1 (no division by a zero segment length anywhere), so none is added.
+function modeIcu(seg: Segment): void {
+  const now16 = seg.now & 0xffff;
+  let dest = seg.aux1;
+  const space = (seg.intensity >> 3) + 2;
+  const eyeGap = Math.trunc(seg.length / space);
+  let state = (seg.step >>> 16) & 0xffff;
+  let nextUpdate = seg.step & 0xffff;
+
+  const destRange = seg.length - eyeGap;
+  const pindex = map(dest, 0, destRange, 0, 255) & 0xff;
+  const col = seg.color_from_palette(pindex, false, false, 0);
+  const bgcol = seg.check2 ? BLACK : seg.color(1);
+  seg.fill(bgcol);
+
+  // draw eyes if not blinking
+  if (state !== 1) {
+    seg.setPixelColor(dest, col);
+    seg.setPixelColor(dest + eyeGap, col);
+    // render next position if moving
+    if (state === 3) {
+      if (seg.aux0 > seg.aux1) dest++;
+      else if (seg.aux0 < seg.aux1) dest--;
+      seg.setPixelColor(dest, col);
+      seg.setPixelColor(dest + eyeGap, col);
+    }
+  }
+
+  // update state -- (int16_t)(now-nextUpdate) >= 0, i.e. handle 16-bit wrap
+  const diff16 = (now16 - nextUpdate) & 0xffff;
+  const signedDiff = diff16 >= 0x8000 ? diff16 - 0x10000 : diff16;
+  if (signedDiff >= 0) {
+    switch (state) {
+      case 0: // pause part 1
+        state = 1;
+        if (seg.rng.random8(6) === 0) {
+          // blink once in a while
+          nextUpdate = (now16 + 200) & 0xffff;
+          break;
+        }
+      // falls through if not blinking
+      case 1: // blink
+        nextUpdate = (now16 + 500 + seg.rng.random16(1000)) & 0xffff;
+        state = 2;
+        break;
+      case 2: // pause part 2
+        seg.aux0 = seg.rng.random16(destRange); // choose a new destination
+        nextUpdate = now16;
+        state = 3;
+        break;
+      default: // move (state 3)
+        seg.aux1 = dest; // update destination to moved position
+        nextUpdate =
+          (now16 + 5 + Math.trunc((50 * (255 - seg.speed)) / seg.length)) &
+          0xffff; // SPEED_FORMULA_L
+        if (seg.aux0 === dest) {
+          // reached destination
+          nextUpdate = (now16 + 500 + seg.rng.random16(1000)) & 0xffff;
+          state = 0;
+        }
+        break;
+    }
+  }
+
+  seg.step = (state << 16) | nextUpdate;
+}
+
+// --- Solid Glitter (103) -------------------------------------------------------
+// Solid color1 background with glitter overlaid via the already-existing
+// glitterBase helper (shared with Glitter, 87).
+function modeSolidGlitter(seg: Segment): void {
+  seg.fill(seg.color(0));
+  // Firmware's fallback here is ULTRAWHITE (0xFFFFFFFF); the existing Glitter
+  // (87) port above already uses this sim's plain WHITE (0xFFFFFF) for the
+  // same fallback since only the W channel differs and this sim's RGB output
+  // never reads it (readBuffer drops W) -- reused here to match that port.
+  glitterBase(seg, seg.intensity, seg.color(2) ? seg.color(2) : WHITE);
+}
+
+// --- Drip (96) -----------------------------------------------------------------
+// Firmware's Spark struct (also backing Popcorn/Fireworks/Rain above) carries
+// posX/velX for 2D use that Drip doesn't need, but is missing the `col`
+// brightness scratch field Drip *does* need -- rather than touch the shared
+// Spark interface/WeakMap, this gets its own DripDrop interface + WeakMap.
+interface DripDrop {
+  pos: number;
+  vel: number;
+  col: number; // brightness scratch (firmware: uint16_t, clamped to <=255 where it matters)
+  colIndex: number; // drop state: 0 init, 1 forming, 2 falling, 5 bouncing
+}
+
+const MAX_DRIPS = 4; // firmware: 1 + (255>>6) = 4 at max intensity
+const dripState = new WeakMap<Segment, DripDrop[]>();
+
+function modeDrip(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  let drops = dripState.get(seg);
+  if (!drops) {
+    drops = Array.from({ length: MAX_DRIPS }, () => ({
+      pos: 0,
+      vel: 0,
+      col: 0,
+      colIndex: 0,
+    }));
+    dripState.set(seg, drops);
+  }
+
+  if (!seg.check2) seg.fill(seg.color(1));
+
+  // Firmware splits one segment into parallel "drip columns" via
+  // nrOfVStrips()/indexToVStrip() for 2D-as-columns use; this sim is 1D-only
+  // (nrOfVStrips() is always 1), so that indirection collapses to a single
+  // direct pass and indexToVStrip(index, 0) is dropped entirely.
+  const numDrops = 1 + (seg.intensity >> 6);
+  let gravity = -0.0005 - seg.speed / 50000;
+  gravity *= Math.max(1, seg.length - 1);
+  const sourcedrop = 12;
+
+  for (let j = 0; j < numDrops; j++) {
+    const drop = drops[j];
+    if (drop.colIndex === 0) {
+      // init
+      drop.pos = seg.length - 1;
+      drop.vel = 0;
+      drop.col = sourcedrop;
+      drop.colIndex = 1;
+    }
+
+    // water source
+    seg.setPixelColor(
+      seg.length - 1,
+      color_blend(BLACK, seg.color(0), sourcedrop),
+    );
+
+    if (drop.colIndex === 1) {
+      if (drop.col > 255) drop.col = 255;
+      seg.setPixelColor(
+        Math.trunc(drop.pos),
+        color_blend(BLACK, seg.color(0), drop.col & 0xff),
+      );
+
+      drop.col += map(seg.speed, 0, 255, 1, 6); // swelling
+
+      if (seg.rng.random8() < Math.trunc(drop.col / 10)) {
+        // random drop
+        drop.colIndex = 2; // fall
+        drop.col = 255;
+      }
+    }
+    if (drop.colIndex > 1) {
+      // falling
+      if (drop.pos > 0) {
+        // fall until end of segment
+        drop.pos += drop.vel;
+        if (drop.pos < 0) drop.pos = 0;
+        drop.vel += gravity; // gravity is negative
+
+        // some minor math so we don't expand bouncing droplets
+        for (let i = 1; i < 7 - drop.colIndex; i++) {
+          const pos = Math.min(
+            Math.max(Math.trunc(drop.pos) + i, 0),
+            seg.length - 1,
+          ); // spread pixel with fade while falling
+          seg.setPixelColor(
+            pos,
+            color_blend(BLACK, seg.color(0), Math.trunc(drop.col / i) & 0xff),
+          );
+        }
+
+        if (drop.colIndex > 2) {
+          // during bounce, some water is on the floor
+          seg.setPixelColor(
+            0,
+            color_blend(seg.color(0), BLACK, drop.col & 0xff),
+          );
+        }
+      } else {
+        // we hit bottom
+        if (drop.colIndex > 2) {
+          // already hit once, so back to forming
+          drop.colIndex = 0;
+          drop.col = sourcedrop;
+        } else {
+          if (drop.colIndex === 2) {
+            // init bounce
+            drop.vel = -drop.vel / 4; // reverse velocity with damping
+            drop.pos += drop.vel;
+          }
+          drop.col = sourcedrop * 2;
+          drop.colIndex = 5; // bouncing
+        }
+      }
+    }
+  }
+}
+
+// --- Fireworks Starburst (89) ---------------------------------------------------
+// Per-star struct array; each star bursts into fragments that fly outward
+// (decelerating) and fade, mirrored on both sides of the ignition point.
+// Firmware sizes numStars/STARBURST_MAX_FRAG off a per-segment memory budget
+// (FAIR_DATA_PER_SEG / sizeof(star)); this sim has no memory ceiling to
+// reconcile with, so numStars is just the length-driven formula uncapped, and
+// STARBURST_MAX_FRAG uses firmware's ESP32 default (10; ESP8266 uses 8) --
+// same category of assumption as the device-memory-budget notes elsewhere.
+const STARBURST_MAX_FRAG = 10;
+
+interface Star {
+  color: RGB;
+  birth: number;
+  last: number;
+  vel: number;
+  pos: number;
+  /** STARBURST_MAX_FRAG entries; <=0 = unused (firmware seeds unused slots
+   * to -1 on ignition, but a fresh/zeroed struct's fields all start at 0 --
+   * both read as "inactive" by the `>0` checks below, so it's a distinction
+   * without a behavioral difference). */
+  fragment: number[];
+}
+
+const starburstStars = new WeakMap<Segment, Star[]>();
+
+function modeStarburst(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const numStars = 1 + (seg.length >> 3);
+
+  let stars = starburstStars.get(seg);
+  if (!stars || stars.length !== numStars) {
+    stars = Array.from({ length: numStars }, () => ({
+      color: [0, 0, 0] as RGB,
+      birth: 0,
+      last: 0,
+      vel: 0,
+      pos: 0,
+      fragment: new Array(STARBURST_MAX_FRAG).fill(0),
+    }));
+    starburstStars.set(seg, stars);
+  }
+
+  const it = seg.now;
+  const maxSpeed = 375.0; // max velocity
+  const particleIgnition = 250.0; // how long to "flash"
+  const particleFadeTime = 1500.0; // fade out time
+
+  for (let j = 0; j < numStars; j++) {
+    // speed adjusts the chance of a burst; max speed is nearly always
+    if (seg.rng.random8(144 - (seg.speed >> 1)) === 0 && stars[j].birth === 0) {
+      // pick a random color and location
+      const startPos = seg.rng.random16(seg.length - 1);
+      const multiplier = seg.rng.random8() / 255;
+
+      const star = stars[j];
+      const wheelColor = seg.color_wheel(seg.rng.random8());
+      star.color = [R(wheelColor), G(wheelColor), B(wheelColor)];
+      star.pos = startPos;
+      star.vel = maxSpeed * (seg.rng.random8() / 255) * multiplier;
+      star.birth = it;
+      star.last = it;
+      // more fragments means a larger burst effect
+      const num = seg.rng.random8(3, 6 + (seg.intensity >> 5));
+
+      for (let i = 0; i < STARBURST_MAX_FRAG; i++) {
+        star.fragment[i] = i < num ? startPos : -1;
+      }
+    }
+  }
+
+  if (!seg.check2) seg.fill(seg.color(1));
+
+  for (let j = 0; j < numStars; j++) {
+    const star = stars[j];
+    if (star.birth !== 0) {
+      const dt = (it - star.last) / 1000.0;
+
+      for (let i = 0; i < STARBURST_MAX_FRAG; i++) {
+        const varr = i >> 1;
+        // all fragments travel right, will be mirrored on the other side
+        if (star.fragment[i] > 0) {
+          star.fragment[i] += star.vel * dt * (varr / 3.0);
+        }
+      }
+      star.last = it;
+      star.vel -= 3 * star.vel * dt;
+    }
+
+    let c: RGB = star.color;
+
+    // If the star is brand new, it flashes white briefly. Otherwise it just
+    // fades over time.
+    let fade = 0.0;
+    let age = it - star.birth;
+
+    if (age < particleIgnition) {
+      const blended = color_blend(
+        WHITE,
+        rgbw32(c[0], c[1], c[2]),
+        Math.trunc(254.5 * (age / particleIgnition)) & 0xff,
+      );
+      c = [R(blended), G(blended), B(blended)];
+    } else {
+      // figure out how much to fade and shrink the star based on its age
+      // relative to its lifetime
+      if (age > particleIgnition + particleFadeTime) {
+        fade = 1.0; // black hole, all faded out
+        star.birth = 0;
+        c = [R(seg.color(1)), G(seg.color(1)), B(seg.color(1))];
+      } else {
+        age -= particleIgnition;
+        fade = age / particleFadeTime; // fading star
+        const blended = color_blend(
+          rgbw32(c[0], c[1], c[2]),
+          seg.color(1),
+          Math.trunc(254.5 * fade) & 0xff,
+        );
+        c = [R(blended), G(blended), B(blended)];
+      }
+    }
+
+    const particleSize = (1.0 - fade) * 2.0;
+    const packed = rgbw32(c[0], c[1], c[2]);
+
+    for (let index = 0; index < STARBURST_MAX_FRAG * 2; index++) {
+      const mirrored = (index & 1) === 1;
+      const i = index >> 1;
+      if (star.fragment[i] > 0) {
+        let loc = star.fragment[i];
+        if (mirrored) loc -= (loc - star.pos) * 2;
+        let start = Math.trunc(loc - particleSize);
+        let end = Math.trunc(loc + particleSize);
+        // Firmware declares start/end as `unsigned`, so `if (start<0)
+        // start=0` is dead code in C++ (an unsigned value can't be
+        // negative) -- a negative loc-particleSize instead becomes a real
+        // float->unsigned cast UB on actual hardware. This sim implements
+        // the code's apparent intent (clamp to 0) rather than guess at a
+        // specific platform's undefined behavior.
+        if (start < 0) start = 0;
+        if (start === end) end++;
+        if (end > seg.length) end = seg.length;
+        for (let p = start; p < end; p++) {
+          seg.setPixelColor(p, packed);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
+ * value is a per-frame function; an id absent here has no simulation yet and
+ * the UI falls back to the CSS preview family (see index.ts isPorted).
+ */
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -3280,4 +3639,8 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   65: modePalette,
   82: modeHalloweenEyes,
   112: modeDancingShadows,
+  58: modeIcu,
+  89: modeStarburst,
+  96: modeDrip,
+  103: modeSolidGlitter,
 };

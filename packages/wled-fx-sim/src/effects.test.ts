@@ -716,4 +716,74 @@ describe('spot checks against known behavior', () => {
     const uniqueColors = new Set(buf.map((px) => px.join(',')));
     expect(uniqueColors.size).toBeGreaterThan(3);
   });
+
+  it('ICU (58) moves its eyes to different positions over time', () => {
+    const sim = createEffectSim(58, {
+      length: 40,
+      sx: 200,
+      ix: 100,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const litIndex = (buf: RGB[]) =>
+      buf.findIndex((px) => px[0] + px[1] + px[2] > 50);
+    const positions = new Set<number>();
+    for (let t = 0; t < 6000; t += 100) {
+      const idx = litIndex(sim.frame(t));
+      if (idx >= 0) positions.add(idx);
+    }
+    expect(positions.size).toBeGreaterThan(1);
+  });
+
+  it('Solid Glitter (103) fills a solid background and eventually sparkles', () => {
+    const sim = createEffectSim(103, {
+      length: 30,
+      ix: 255,
+      colors: [[10, 10, 10], BLACK_RGB, [255, 255, 255]],
+    });
+    let sawGlitter = false;
+    for (let t = 0; t < 500; t += 23) {
+      const buf = sim.frame(t);
+      const bgMatches = buf.filter(
+        (px) => px[0] === 10 && px[1] === 10 && px[2] === 10,
+      ).length;
+      expect(bgMatches).toBeGreaterThanOrEqual(buf.length - 1);
+      if (buf.some((px) => px[0] === 255 && px[1] === 255 && px[2] === 255)) {
+        sawGlitter = true;
+      }
+    }
+    expect(sawGlitter).toBe(true);
+  });
+
+  it('Drip (96) forms and falls, lighting positions other than the source pixel', () => {
+    const sim = createEffectSim(96, {
+      length: 30,
+      sx: 200,
+      ix: 200,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawDropAway = false;
+    for (let t = 0; t < 6000; t += 30) {
+      const buf = sim.frame(t);
+      for (let i = 0; i < buf.length - 1; i++) {
+        const [r, g, b] = buf[i];
+        if (r + g + b > 60) sawDropAway = true;
+      }
+    }
+    expect(sawDropAway).toBe(true);
+  });
+
+  it('Fireworks Starburst (89) shows bright burst frames against the background', () => {
+    const sim = createEffectSim(89, {
+      length: 60,
+      sx: 200,
+      ix: 200,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawBurst = false;
+    for (let t = 0; t < 6000; t += 30) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 200)) sawBurst = true;
+    }
+    expect(sawBurst).toBe(true);
+  });
 });
