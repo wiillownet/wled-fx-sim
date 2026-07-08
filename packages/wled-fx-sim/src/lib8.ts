@@ -646,6 +646,16 @@ export function inoise16(x: number, y: number, z: number): number {
   return (((perlin3DRaw(x, y, z) * 1731) >> 10) + 33147) & 0xffff;
 }
 
+/**
+ * 2D fixed-point gradient noise, uint16 in/out -- WLED perlin16(x,y) (a
+ * genuinely distinct overload, NOT `inoise16(x,y,0)`: real firmware scales
+ * perlin2D_raw with its own constants (1537/32725) separate from the 3D
+ * overload's (1731/33147), so the two aren't interchangeable.
+ */
+export function inoise16xy(x: number, y: number): number {
+  return (((perlin2DRaw(x, y, false) * 1537) >> 10) + 32725) & 0xffff;
+}
+
 // --- Perlin noise (WLED util.cpp, NOT FastLED's table-based inoise8/16) -----
 // WLED 16.0 replaced FastLED's classic Perlin noise with its own from-scratch
 // integer implementation (by @dedehai): a hash-based gradient noise with a

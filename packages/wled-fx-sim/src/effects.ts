@@ -45,6 +45,7 @@ import {
   triwave16,
   triwave8,
   inoise16,
+  inoise16xy,
   unpack,
   R,
   G,
@@ -76,6 +77,19 @@ function map(
 /** SEGLEN<=1 fallback -- FX_FALLBACK_STATIC. */
 function fallbackStatic(seg: Segment): void {
   seg.fill(seg.color(0));
+}
+
+/** New random wheel index at least 42 apart from `pos` -- util.cpp get_random_wheel_index. */
+function getRandomWheelIndex(seg: Segment, pos: number): number {
+  let r: number;
+  let d: number;
+  do {
+    r = seg.rng.random8();
+    const x = Math.abs(pos - r);
+    const y = 255 - x;
+    d = Math.min(x, y);
+  } while (d < 42);
+  return r;
 }
 
 // --- Solid (0) --------------------------------------------------------------
@@ -154,24 +168,46 @@ function modeBreath(seg: Segment): void {
   }
 }
 
-// --- Wipe (3) ---------------------------------------------------------------
-function colorWipe(seg: Segment, rev: boolean): void {
+// --- Wipe (3) / Sweep (6) / Wipe Random (4) / Sweep Random (36) -------------
+function colorWipe(seg: Segment, rev: boolean, useRandomColors = false): void {
   if (seg.length <= 1) return fallbackStatic(seg);
   const cycleTime = 750 + (255 - seg.speed) * 150;
   const perc = seg.now % cycleTime;
   let prog = Math.trunc((perc * 65535) / cycleTime);
   const back = prog > 32767;
-  if (back) prog -= 32767;
+  if (back) {
+    prog -= 32767;
+    if (seg.step === 0) seg.step = 1;
+  } else {
+    if (seg.step === 2) seg.step = 3;
+  }
+
+  if (useRandomColors) {
+    if (seg.call === 0) {
+      seg.aux0 = seg.rng.random8();
+      seg.step = 3;
+    }
+    if (seg.step === 1) {
+      seg.aux1 = getRandomWheelIndex(seg, seg.aux0);
+      seg.step = 2;
+    }
+    if (seg.step === 3) {
+      seg.aux0 = getRandomWheelIndex(seg, seg.aux1);
+      seg.step = 0;
+    }
+  }
 
   const ledIndex = (prog * seg.length) >> 15;
   let rem = (prog * seg.length * 2) & 0xffff;
   rem = Math.trunc(rem / (seg.intensity + 1));
   if (rem > 255) rem = 255;
 
-  const col1 = seg.color(1);
+  const col1 = useRandomColors ? seg.color_wheel(seg.aux1) : seg.color(1);
   for (let i = 0; i < seg.length; i++) {
     const index = rev && back ? seg.length - 1 - i : i;
-    const col0 = seg.color_from_palette(index, true, false, 0);
+    const col0 = useRandomColors
+      ? seg.color_wheel(seg.aux0)
+      : seg.color_from_palette(index, true, false, 0);
     if (i < ledIndex) {
       seg.setPixelColor(index, back ? col1 : col0);
     } else {
@@ -188,6 +224,18 @@ function colorWipe(seg: Segment, rev: boolean): void {
 
 function modeColorWipe(seg: Segment): void {
   colorWipe(seg, false);
+}
+
+function modeColorSweep(seg: Segment): void {
+  colorWipe(seg, true);
+}
+
+function modeColorWipeRandom(seg: Segment): void {
+  colorWipe(seg, false, true);
+}
+
+function modeColorSweepRandom(seg: Segment): void {
+  colorWipe(seg, true, true);
 }
 
 // --- Colorloop (8, mode_rainbow) --------------------------------------------
@@ -220,8 +268,8 @@ function modeRainbowCycle(seg: Segment): void {
   }
 }
 
-// --- Scan (10) --------------------------------------------------------------
-function modeScan(seg: Segment): void {
+// --- Scan (10) / Scan Dual (11) ----------------------------------------------
+function scanBase(seg: Segment, dual: boolean): void {
   if (seg.length <= 1) return fallbackStatic(seg);
   const cycleTime = 750 + (255 - seg.speed) * 150;
   const perc = seg.now % cycleTime;
@@ -233,9 +281,26 @@ function modeScan(seg: Segment): void {
 
   let ledOffset = ledIndex - (seg.length - size);
   ledOffset = Math.abs(ledOffset);
+
+  if (dual) {
+    const mcol = seg.color(2) ? 2 : 0;
+    for (let j = ledOffset; j < ledOffset + size; j++) {
+      const i2 = seg.length - 1 - j;
+      seg.setPixelColor(i2, seg.color_from_palette(i2, true, false, mcol));
+    }
+  }
+
   for (let j = ledOffset; j < ledOffset + size; j++) {
     seg.setPixelColor(j, seg.color_from_palette(j, true, false, 0));
   }
+}
+
+function modeScan(seg: Segment): void {
+  scanBase(seg, false);
+}
+
+function modeDualScan(seg: Segment): void {
+  scanBase(seg, true);
 }
 
 // --- Fade (12) --------------------------------------------------------------
@@ -331,9 +396,8 @@ function modeTwinkle(seg: Segment): void {
   }
 }
 
-// --- Dissolve (18) ----------------------------------------------------------
-function modeDissolve(seg: Segment): void {
-  const color = seg.color(0);
+// --- Dissolve (18) / Dissolve Random (19) shared "dissolve" helper ----------
+function dissolveImpl(seg: Segment, color: number): void {
   const buf = seg.allocateData(seg.length * 4);
   const px = new Uint32Array(buf.buffer, buf.byteOffset, seg.length);
 
@@ -364,14 +428,37 @@ function modeDissolve(seg: Segment): void {
     }
   }
 
-  for (let i = 0; i < seg.length; i++) seg.setPixelColor(i, px[i]);
+  let incompletePixels = 0;
+  for (let i = 0; i < seg.length; i++) {
+    seg.setPixelColor(i, px[i]);
+    if (seg.check2) {
+      if (seg.aux0) {
+        if (px[i] === seg.color(1) >>> 0) incompletePixels++;
+      } else if (px[i] !== seg.color(1) >>> 0) {
+        incompletePixels++;
+      }
+    }
+  }
 
   if (seg.step > 255 - seg.speed + 15) {
     seg.aux0 = seg.aux0 ? 0 : 1;
     seg.step = 0;
+  } else if (seg.check2) {
+    if (incompletePixels === 0) seg.step++;
   } else {
     seg.step++;
   }
+}
+
+function modeDissolve(seg: Segment): void {
+  dissolveImpl(
+    seg,
+    seg.check1 ? seg.color_wheel(seg.rng.random8()) : seg.color(0),
+  );
+}
+
+function modeDissolveRandom(seg: Segment): void {
+  dissolveImpl(seg, seg.color_wheel(seg.rng.random8()));
 }
 
 // --- Sparkle (20) -----------------------------------------------------------
@@ -390,16 +477,57 @@ function modeSparkle(seg: Segment): void {
   seg.setPixelColor(seg.aux0, seg.color(0));
 }
 
-// --- Chase (28) / Chase Rainbow (30) shared "chase" helper ------------------
+// --- Flash Sparkle (21) / Hyper Sparkle (22) shared flash-timing base -------
+// Real firmware reuses aux0/step for two different roles across frames (a
+// last-flash timestamp, then a delay amount, then back) rather than adding
+// fields -- ported with that exact reuse, not "cleaned up" into named state.
+function sparkleFlashBase(seg: Segment, count: number): void {
+  if (!seg.check2) {
+    for (let i = 0; i < seg.length; i++) {
+      seg.setPixelColor(i, seg.color_from_palette(i, true, false, 0));
+    }
+  }
+  if (seg.now - seg.aux0 > seg.step) {
+    if (seg.rng.random8((255 - seg.intensity) >> 4) === 0) {
+      for (let i = 0; i < count; i++) {
+        seg.setPixelColor(seg.rng.random16(seg.length), seg.color(1));
+      }
+    }
+    seg.step = seg.now;
+    seg.aux0 = 255 - seg.speed;
+  }
+}
+
+function modeFlashSparkle(seg: Segment): void {
+  sparkleFlashBase(seg, 1);
+}
+
+function modeHyperSparkle(seg: Segment): void {
+  sparkleFlashBase(seg, Math.max(1, Math.trunc(seg.length / 3)));
+}
+
+// --- Chase (28) / Chase Rainbow (30) / Chase Random (29) / Rainbow White (33)
+// shared "chase" helper. Real firmware reads its own `SEGMENT.mode ==
+// FX_MODE_CHASE_RANDOM` inside the shared function; ported as an explicit
+// `isRandom` param instead, since this sim has no SEGMENT.mode concept.
 function chase(
   seg: Segment,
   color1: number,
   color2: number,
   color3: number,
   doPalette: boolean,
+  isRandom = false,
 ): void {
   const counter = (seg.now * ((seg.speed >> 2) + 1)) & 0xffff;
   const a = (counter * seg.length) >> 16;
+
+  if (isRandom) {
+    if (a < seg.step) {
+      seg.aux1 = seg.aux0;
+      seg.aux0 = getRandomWheelIndex(seg, seg.aux0);
+    }
+    color1 = seg.color_wheel(seg.aux0);
+  }
   seg.step = a;
 
   const size = 1 + ((seg.intensity * seg.length) >> 10);
@@ -414,6 +542,11 @@ function chase(
     }
   } else {
     seg.fill(color1);
+  }
+
+  if (isRandom) {
+    color1 = seg.color_wheel(seg.aux1);
+    for (let i = a; i < seg.length; i++) seg.setPixelColor(i, color1);
   }
 
   const fillRange = (from: number, to: number, col: number) => {
@@ -438,12 +571,136 @@ function modeChaseColor(seg: Segment): void {
   );
 }
 
+function modeChaseRandom(seg: Segment): void {
+  chase(
+    seg,
+    seg.color(1),
+    seg.color(2) ? seg.color(2) : seg.color(0),
+    seg.color(0),
+    false,
+    true,
+  );
+}
+
 function modeChaseRainbow(seg: Segment): void {
   let colorSep = Math.trunc(256 / seg.length);
   if (colorSep === 0) colorSep = 1;
   const colorIndex = seg.call & 0xff;
   const color = seg.color_wheel((seg.step * colorSep + colorIndex) & 0xff);
   chase(seg, color, seg.color(0), seg.color(1), false);
+}
+
+function modeChaseRainbowWhite(seg: Segment): void {
+  const n = seg.step;
+  const m = (seg.step + 1) % seg.length;
+  const color2 = seg.color_wheel(
+    (Math.trunc((n * 256) / seg.length) + (seg.call & 0xff)) & 0xff,
+  );
+  const color3 = seg.color_wheel(
+    (Math.trunc((m * 256) / seg.length) + (seg.call & 0xff)) & 0xff,
+  );
+  chase(seg, seg.color(0), color2, color3, false);
+}
+
+// --- Chase Flash (31) / Chase Flash Random (32) -----------------------------
+const FLASH_COUNT = 4;
+
+function modeChaseFlash(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  const now = seg.now;
+  let advance = true;
+  const flashStep = seg.aux1 % (FLASH_COUNT * 2 + 1);
+  if (now < seg.step) advance = false;
+  else seg.aux1++;
+
+  for (let i = 0; i < seg.length; i++) {
+    seg.setPixelColor(i, seg.color_from_palette(i, true, false, 0));
+  }
+  const n = seg.aux0;
+  const m = (seg.aux0 + 1) % seg.length;
+
+  let delay = 10 + Math.trunc((30 * (255 - seg.speed)) / seg.length);
+  if (flashStep < FLASH_COUNT * 2) {
+    if (flashStep % 2 === 0) {
+      seg.setPixelColor(n, seg.color(1));
+      seg.setPixelColor(m, seg.color(1));
+      delay = 20;
+    } else {
+      delay = 30;
+    }
+  } else if (advance) {
+    seg.aux0 = m;
+  }
+  if (advance) seg.step = now + delay;
+}
+
+function modeChaseFlashRandom(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  const now = seg.now;
+  let advance = true;
+  if (now < seg.step) {
+    seg.call--;
+    advance = false;
+  }
+  const flashStep = seg.call % (FLASH_COUNT * 2 + 1);
+
+  for (let i = 0; i < seg.aux1; i++) {
+    seg.setPixelColor(i, seg.color_wheel(seg.aux0));
+  }
+
+  let delay = 1 + Math.trunc((10 * (255 - seg.speed)) / seg.length);
+  if (flashStep < FLASH_COUNT * 2) {
+    const n = seg.aux1;
+    const m = (seg.aux1 + 1) % seg.length;
+    if (flashStep % 2 === 0) {
+      seg.setPixelColor(n, seg.color(0));
+      seg.setPixelColor(m, seg.color(0));
+      delay = 20;
+    } else {
+      seg.setPixelColor(n, seg.color_wheel(seg.aux0));
+      seg.setPixelColor(m, seg.color(1));
+      delay = 30;
+    }
+  } else if (advance) {
+    seg.aux1 = (seg.aux1 + 1) % seg.length;
+    if (seg.aux1 === 0) {
+      seg.aux0 = getRandomWheelIndex(seg, seg.aux0);
+    }
+  }
+  if (advance) seg.step = now + delay;
+}
+
+// --- Running Color (37, mode_running_color) ---------------------------------
+function modeRunningColor(seg: Segment): void {
+  running(seg, seg.color(0), seg.color(1), false);
+}
+
+// --- Random Color (5) --------------------------------------------------------
+function modeRandomColor(seg: Segment): void {
+  const cycleTime = 200 + (255 - seg.speed) * 50;
+  const it = Math.trunc(seg.now / cycleTime);
+  const rem = seg.now % cycleTime;
+  const fadedur = (cycleTime * seg.intensity) >> 8;
+
+  let fade = 255;
+  if (fadedur) {
+    fade = Math.trunc((rem * 255) / fadedur);
+    if (fade > 255) fade = 255;
+  }
+
+  if (seg.call === 0) {
+    seg.aux0 = seg.rng.random8();
+    seg.step = 2;
+  }
+  if (it !== seg.step) {
+    seg.aux1 = seg.aux0;
+    seg.aux0 = getRandomWheelIndex(seg, seg.aux0);
+    seg.step = it;
+  }
+
+  seg.fill(
+    color_blend(seg.color_wheel(seg.aux1), seg.color_wheel(seg.aux0), fade),
+  );
 }
 
 // --- Scanner (40, mode_larson_scanner) --------------------------------------
@@ -3810,6 +4067,66 @@ function modeNoise16_1(seg: Segment): void {
   }
 }
 
+// --- Noise 2 / Noise16_2 (71) ------------------------------------------------
+function modeNoise16_2(seg: Segment): void {
+  const scale = 1000;
+  seg.step += 1 + (seg.speed >> 1);
+
+  for (let i = 0; i < seg.length; i++) {
+    const shiftX = seg.step >> 6;
+    const realX = (i + shiftX) * scale;
+    const noise = inoise16(realX, 0, 4223) >>> 8;
+    const index = sin8(noise * 3);
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0, noise));
+  }
+}
+
+// --- Noise 3 / Noise16_3 (72) ------------------------------------------------
+function modeNoise16_3(seg: Segment): void {
+  const scale = 800;
+  seg.step += 1 + seg.speed;
+  const shiftX = 4223;
+  const shiftY = 1234;
+
+  for (let i = 0; i < seg.length; i++) {
+    const realX = (i + shiftX) * scale;
+    const realY = (i + shiftY) * scale;
+    const realZ = seg.step * 8;
+    const noise = inoise16(realX, realY, realZ) >>> 8;
+    const index = sin8(noise * 3);
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0, noise));
+  }
+}
+
+// --- Noise 4 / Noise16_4 (73) ------------------------------------------------
+// https://github.com/aykevl/ledstrip-spark. Uses the 2-arg perlin16(x,y)
+// overload (inoise16xy) -- a distinct scale/offset from the 3-arg inoise16
+// used above, not that function with z=0.
+function modeNoise16_4(seg: Segment): void {
+  const stp = (seg.now * seg.speed) >> 7;
+  for (let i = 0; i < seg.length; i++) {
+    const index = inoise16xy(i << 12, stp);
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0));
+  }
+}
+
+// --- Perlin Move (147) -------------------------------------------------------
+// WLED-SR effect by Andrew Tuline. Same 2-arg inoise16xy overload as Noise 4.
+function modePerlinMove(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  seg.fade_out(255 - seg.custom1);
+  const count = Math.trunc(seg.intensity / 16) + 1;
+  const t = Math.trunc((seg.now * 128) / (260 - seg.speed));
+  for (let i = 0; i < count; i++) {
+    const locn = inoise16xy(t + i * 15000, t);
+    const pixloc = map(locn, 50 * 256, 192 * 256, 0, seg.length - 1);
+    seg.setPixelColor(
+      pixloc,
+      seg.color_from_palette(pixloc % 255, false, false, 0),
+    );
+  }
+}
+
 // --- Fireworks 1D / "Exploding Fireworks" (90) ------------------------------
 // http://www.anirama.com/1000leds/1d-fireworks/. Shares the shape of the
 // existing Spark struct (pos/vel/colIndex) used by Popcorn/Fireworks/Rain,
@@ -4627,6 +4944,93 @@ function modeShimmer(seg: Segment): void {
   }
 }
 
+// --- Running Dual (52, mode_running_dual via running_base(false,true)) -----
+// Real firmware's running_base(saw,dual) also backs the already-ported
+// Running Lights (15) / Saw (16), but those two were deliberately kept
+// standalone rather than refactored into a shared base (see decisions.md,
+// batch 5) -- same precedent applied here rather than reopening them.
+function sinGap(inp: number): number {
+  const in16 = inp & 0xffff;
+  if (in16 & 0x100) return 0;
+  return sin8(in16 + 192);
+}
+
+function modeRunningDual(seg: Segment): void {
+  const xScale = seg.intensity >> 2;
+  const counter = (seg.now * seg.speed) >> 9;
+  for (let i = 0; i < seg.length; i++) {
+    const a = i * xScale - counter;
+    const s = sinGap(a);
+    let ca = color_blend(
+      seg.color(1),
+      seg.color_from_palette(i, true, false, 0),
+      s,
+    );
+    const b = (seg.length - 1 - i) * xScale - counter;
+    const t = sinGap(b);
+    const cb = color_blend(
+      seg.color(1),
+      seg.color_from_palette(i, true, false, 2),
+      t,
+    );
+    ca = color_blend(ca, cb, 127);
+    seg.setPixelColor(i, ca);
+  }
+}
+
+// --- Tricolor Chase (54, "Chase 3") ------------------------------------------
+function tricolorChase(seg: Segment, color1: number, color2: number): void {
+  const cycleTime = 50 + ((255 - seg.speed) << 1);
+  const it = Math.trunc(seg.now / cycleTime);
+  const width = 1 + (seg.intensity >> 4);
+  let index = it % (width * 3);
+
+  for (let i = 0; i < seg.length; i++) {
+    if (index > width * 3 - 1) index = 0;
+    let color = color1;
+    if (index > (width << 1) - 1) {
+      color = seg.color_from_palette(i, true, false, 1);
+    } else if (index > width - 1) {
+      color = color2;
+    }
+    seg.setPixelColor(seg.length - i - 1, color);
+    index++;
+  }
+}
+
+function modeTricolorChase(seg: Segment): void {
+  tricolorChase(seg, seg.color(2), seg.color(0));
+}
+
+// --- Tricolor Wipe (55) -------------------------------------------------------
+function modeTricolorWipe(seg: Segment): void {
+  const cycleTime = 1000 + (255 - seg.speed) * 200;
+  const perc = seg.now % cycleTime;
+  const prog = Math.trunc((perc * 65535) / cycleTime);
+  const ledIndex = (prog * seg.length * 3) >> 16;
+  let ledOffset = ledIndex;
+
+  for (let i = 0; i < seg.length; i++) {
+    seg.setPixelColor(i, seg.color_from_palette(i, true, false, 2));
+  }
+
+  if (ledIndex < seg.length) {
+    for (let i = 0; i < seg.length; i++) {
+      seg.setPixelColor(i, i > ledOffset ? seg.color(0) : seg.color(1));
+    }
+  } else if (ledIndex < seg.length * 2) {
+    ledOffset = ledIndex - seg.length;
+    for (let i = ledOffset + 1; i < seg.length; i++) {
+      seg.setPixelColor(i, seg.color(1));
+    }
+  } else {
+    ledOffset = ledIndex - seg.length * 2;
+    for (let i = 0; i <= ledOffset; i++) {
+      seg.setPixelColor(i, seg.color(0));
+    }
+  }
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -4733,4 +5137,24 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   102: modeCandleMulti,
   109: modePhasedNoise,
   161: modeShimmer,
+  4: modeColorWipeRandom,
+  5: modeRandomColor,
+  6: modeColorSweep,
+  11: modeDualScan,
+  19: modeDissolveRandom,
+  21: modeFlashSparkle,
+  22: modeHyperSparkle,
+  29: modeChaseRandom,
+  31: modeChaseFlash,
+  32: modeChaseFlashRandom,
+  33: modeChaseRainbowWhite,
+  36: modeColorSweepRandom,
+  37: modeRunningColor,
+  52: modeRunningDual,
+  54: modeTricolorChase,
+  55: modeTricolorWipe,
+  71: modeNoise16_2,
+  72: modeNoise16_3,
+  73: modeNoise16_4,
+  147: modePerlinMove,
 };

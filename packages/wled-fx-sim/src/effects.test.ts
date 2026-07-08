@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createEffectSim,
+  FRAMETIME,
   getEffectSim,
   isPorted,
   portedFxIds,
@@ -116,7 +117,16 @@ describe('animated effects change over time', () => {
   // argument entirely, so it renders a static solid color (a real firmware
   // characteristic, confirmed against a non-default palette in the spot
   // checks below, not a port bug).
-  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70, 69]);
+  // Noise 4 (73) hits the exact same palette-0 shortcut as Noise 1/Fill
+  // Noise8 -- it passes only `index` (no varying pbri), so it's static here
+  // too (see its spot check for a real-palette proof it animates).
+  // Flash Sparkle (21) genuinely does change over time, but only for a
+  // single simulated frame per rare flash (real firmware: hw_random8 gated,
+  // ~1/3 chance per ~55ms check at this test's params) -- coarse multi-
+  // hundred-ms sampling isn't a reliable way to observe a one-frame event,
+  // not a sign the port is actually static (see its spot check, which
+  // samples densely enough to catch a flash).
+  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70, 69, 73, 21]);
   const animated = portedFxIds().filter((id) => !staticIds.has(id));
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {
@@ -1054,5 +1064,184 @@ describe('spot checks against known behavior', () => {
       }
     }
     expect(sawDifference).toBe(true);
+  });
+
+  it('Color Wipe Random (4) cycles through varying random wheel colors', () => {
+    const sim = createEffectSim(4, { length: 30, sx: 200, ix: 128 });
+    const colors = new Set<string>();
+    for (let t = 0; t < 8000; t += 100) {
+      colors.add(sim.frame(t)[0].join(','));
+    }
+    expect(colors.size).toBeGreaterThan(1);
+  });
+
+  it('Dual Scan (11) lights a mirrored second dot alongside the primary', () => {
+    const sim = createEffectSim(11, {
+      length: 30,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, [0, 0, 255]],
+    });
+    let sawMirrored = false;
+    for (let t = 0; t < 3000; t += 30) {
+      const buf = sim.frame(t);
+      const litRight = buf.some((px) => px[2] > 100 && px[0] < 50);
+      if (litRight) sawMirrored = true;
+    }
+    expect(sawMirrored).toBe(true);
+  });
+
+  it('Chase Random (29) cycles its leading color across laps', () => {
+    const sim = createEffectSim(29, { length: 20, sx: 255, ix: 128 });
+    const colors = new Set<string>();
+    for (let t = 0; t < 8000; t += 40) {
+      colors.add(sim.frame(t)[0].join(','));
+    }
+    expect(colors.size).toBeGreaterThan(2);
+  });
+
+  it('Chase Flash (31) flashes the secondary color ahead of the chase', () => {
+    const sim = createEffectSim(31, {
+      length: 20,
+      sx: 128,
+      ix: 128,
+      colors: [BLACK_RGB, [255, 255, 255], BLACK_RGB],
+    });
+    let sawFlash = false;
+    for (let t = 0; t < 3000; t += 15) {
+      if (sim.frame(t).some((px) => px[0] + px[1] + px[2] > 400))
+        sawFlash = true;
+    }
+    expect(sawFlash).toBe(true);
+  });
+
+  it('Chase Flash Random (32) advances its random trail color over time', () => {
+    const sim = createEffectSim(32, { length: 20, sx: 128, ix: 128 });
+    const colors = new Set<string>();
+    for (let t = 0; t < 8000; t += 40) {
+      colors.add(sim.frame(t)[0].join(','));
+    }
+    expect(colors.size).toBeGreaterThan(1);
+  });
+
+  it('Chase Rainbow White (33) shows varying rainbow hues over time', () => {
+    const sim = createEffectSim(33, { length: 20, sx: 200, ix: 128 });
+    const hues = new Set<string>();
+    for (let t = 0; t < 4000; t += 30) {
+      hues.add(sim.frame(t)[0].join(','));
+    }
+    expect(hues.size).toBeGreaterThan(2);
+  });
+
+  it('Dissolve Random (19) fills in varying random colors over time', () => {
+    const sim = createEffectSim(19, { length: 30, sx: 200, ix: 200 });
+    const colors = new Set<string>();
+    for (let t = 0; t < 3000; t += 40) {
+      for (const px of sim.frame(t)) colors.add(px.join(','));
+    }
+    expect(colors.size).toBeGreaterThan(2);
+  });
+
+  it('Flash Sparkle (21) eventually flashes against a dark background', () => {
+    const sim = createEffectSim(21, {
+      length: 30,
+      sx: 200,
+      ix: 128,
+      colors: [BLACK_RGB, [255, 255, 255], BLACK_RGB],
+    });
+    let sawFlash = false;
+    for (let t = 0; t < 4000; t += FRAMETIME) {
+      if (sim.frame(t).some((px) => px[0] + px[1] + px[2] > 400))
+        sawFlash = true;
+    }
+    expect(sawFlash).toBe(true);
+  });
+
+  it('Random Color (5) crossfades between successive random wheel colors', () => {
+    const sim = createEffectSim(5, { length: 10, sx: 200, ix: 128 });
+    const colors = new Set<string>();
+    for (let t = 0; t < 8000; t += 100) {
+      colors.add(sim.frame(t)[0].join(','));
+    }
+    expect(colors.size).toBeGreaterThan(2);
+  });
+
+  it('Running Dual (52) blends two opposite-direction bands', () => {
+    const sim = createEffectSim(52, {
+      length: 30,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, [0, 0, 255]],
+    });
+    const frame0 = sim.frame(0);
+    const frame2000 = sim.frame(2000);
+    expect(JSON.stringify(frame0)).not.toBe(JSON.stringify(frame2000));
+  });
+
+  it('Tricolor Chase (54) cycles through a repeating three-band pattern', () => {
+    const sim = createEffectSim(54, {
+      length: 30,
+      sx: 200,
+      ix: 128,
+      colors: [RED, GREEN, BLUE],
+    });
+    let sawRed = false;
+    let sawBlue = false;
+    for (let t = 0; t < 4000; t += 30) {
+      for (const px of sim.frame(t)) {
+        if (px[0] > 200 && px[1] < 50 && px[2] < 50) sawRed = true;
+        if (px[2] > 200 && px[0] < 50 && px[1] < 50) sawBlue = true;
+      }
+    }
+    expect(sawRed).toBe(true);
+    expect(sawBlue).toBe(true);
+  });
+
+  it('Tricolor Wipe (55) sweeps through all three project colors over one cycle', () => {
+    const sim = createEffectSim(55, {
+      length: 30,
+      sx: 200,
+      colors: [RED, GREEN, BLUE],
+    });
+    let sawRed = false;
+    let sawGreen = false;
+    let sawBlue = false;
+    // cycleTime at sx=200 is 1000 + (255-200)*200 = 12000ms; sample a full cycle.
+    for (let t = 0; t < 13000; t += 40) {
+      const px = sim.frame(t)[0];
+      if (px[0] > 200 && px[1] < 50 && px[2] < 50) sawRed = true;
+      if (px[1] > 200 && px[0] < 50 && px[2] < 50) sawGreen = true;
+      if (px[2] > 200 && px[0] < 50 && px[1] < 50) sawBlue = true;
+    }
+    expect(sawRed).toBe(true);
+    expect(sawGreen).toBe(true);
+    expect(sawBlue).toBe(true);
+  });
+
+  it('Noise 4 (73) shows multiple distinct hues across the strip with a real palette', () => {
+    // Same palette-0 shortcut as Noise 1/Fill Noise8 -- needs a real palette
+    // to see the noise-driven index vary at all (see staticIds above).
+    const sim = createEffectSim(73, { length: 30, sx: 128, pal: 26 });
+    const buf = sim.frame(1000);
+    const uniqueColors = new Set(buf.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(3);
+  });
+
+  it('Perlin Move (147) lights moving comet positions against a faded trail', () => {
+    const sim = createEffectSim(147, {
+      length: 40,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawLit = false;
+    const snapshots = new Set<string>();
+    for (let t = 0; t < 4000; t += 30) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 60)) sawLit = true;
+      snapshots.add(JSON.stringify(buf));
+    }
+    expect(sawLit).toBe(true);
+    expect(snapshots.size).toBeGreaterThan(1);
   });
 });
