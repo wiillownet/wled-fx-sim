@@ -10,8 +10,13 @@ import type { RGB } from './lib8.js';
 import { unpack } from './lib8.js';
 import { FIXED_PALETTES } from './palette-data.generated.js';
 
-/** Linear RGB gradient between two colors across [startpos, endpos] -- fill_gradient_RGB. */
-function fillGradient(
+/**
+ * Linear RGB gradient between two colors across [startpos, endpos] --
+ * fill_gradient_RGB (single-range overload). Exported beyond loadPalette's own
+ * use so effects that build an ad-hoc runtime palette (e.g. Noise Pal's
+ * CHSV-stop palette) can reuse the same primitive rather than re-deriving it.
+ */
+export function fillGradient(
   out: RGB[],
   startpos: number,
   sc: RGB,
@@ -103,4 +108,38 @@ export function loadPalette(
 /** Whether a palette id has real offline data (dynamic 0-5 or fixed 6-71). */
 export function hasPaletteData(pal: number): boolean {
   return pal <= 5 || pal in FIXED_PALETTES;
+}
+
+/**
+ * Blend a 16-entry palette toward a target palette by up to `maxChanges`
+ * byte-channels per call, one step at a time -- WLED/FastLED
+ * nblendPaletteTowardPalette (fastled_slim.cpp), ported byte-for-byte over the
+ * RGB[16] representation this sim uses in place of CRGBPalette16's raw bytes.
+ * Mutates `current` in place. A real FastLED asymmetry, not a bug: a channel
+ * eases *up* by 1 per changed step but eases *down* by up to 2, so a palette
+ * dims faster than it brightens.
+ */
+export function nblendPaletteTowardPalette(
+  current: RGB[],
+  target: RGB[],
+  maxChanges: number,
+): void {
+  let changes = 0;
+  for (let i = 0; i < 16; i++) {
+    for (let ch = 0; ch < 3; ch++) {
+      const p2 = target[i][ch];
+      let p1 = current[i][ch];
+      if (p1 === p2) continue;
+      if (p1 < p2) {
+        p1 += 1;
+        changes++;
+      } else {
+        p1 -= 1;
+        changes++;
+        if (p1 > p2) p1 -= 1;
+      }
+      current[i][ch] = p1;
+      if (changes >= maxChanges) return;
+    }
+  }
 }

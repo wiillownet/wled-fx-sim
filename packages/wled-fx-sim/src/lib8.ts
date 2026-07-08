@@ -645,3 +645,69 @@ function perlin3DRaw(x: number, y: number, z: number): number {
 export function inoise16(x: number, y: number, z: number): number {
   return (((perlin3DRaw(x, y, z) * 1731) >> 10) + 33147) & 0xffff;
 }
+
+// --- Perlin noise (WLED util.cpp, NOT FastLED's table-based inoise8/16) -----
+// WLED 16.0 replaced FastLED's classic Perlin noise with its own from-scratch
+// integer implementation (by @dedehai): a hash-based gradient noise with a
+// cubic smoothstep, ported faithfully since effect motion depends on its
+// exact curve, not just "some noise." Only the 2D uint8 form (`perlin8(x,y)`)
+// is implemented here -- `PERLIN_SHIFT`/`hashToGradient` are the same
+// primitives the 3D `inoise16` above already declares, reused as-is.
+
+/** 2D corner gradient dot-product from hashed integer coordinates -- gradient2D. */
+function gradient2D(x0: number, dx: number, y0: number, dy: number): number {
+  let h = (Math.imul(x0, 0x27d4eb2d) ^ Math.imul(y0, 0xb5297a4d)) >>> 0;
+  h = (h ^ (h >>> 15)) >>> 0;
+  h = Math.imul(h, 0x92c3412b) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  return (
+    (hashToGradient(h) * dx + hashToGradient(h >>> PERLIN_SHIFT) * dy) >>
+    (1 + PERLIN_SHIFT)
+  );
+}
+
+/** Fast cubic smoothstep t*(3-2t), fixed-point -- util.cpp smoothstep. */
+function perlinSmoothstep(t: number): number {
+  const tSquared = (t * t) >>> 16;
+  const factor = (3 << 16) - (t << 1);
+  return (tSquared * factor) >>> 18;
+}
+
+/** 2D Perlin noise, 16.16 fixed-point inputs, `is16bit` wraps corners at 0xFF
+ * instead of 0xFFFF -- util.cpp perlin2D_raw. Returns roughly -20633..20629. */
+function perlin2DRaw(x: number, y: number, is16bit: boolean): number {
+  const x0 = x >>> 16;
+  const y0 = y >>> 16;
+  let x1 = x0 + 1;
+  let y1 = y0 + 1;
+  if (is16bit) {
+    x1 &= 0xff;
+    y1 &= 0xff;
+  }
+  const dx0 = x & 0xffff;
+  const dy0 = y & 0xffff;
+  const dx1 = dx0 - 0x10000;
+  const dy1 = dy0 - 0x10000;
+  const g00 = gradient2D(x0, dx0, y0, dy0);
+  const g10 = gradient2D(x1, dx1, y0, dy0);
+  const g01 = gradient2D(x0, dx0, y1, dy1);
+  const g11 = gradient2D(x1, dx1, y1, dy1);
+  const tx = perlinSmoothstep(dx0);
+  const ty = perlinSmoothstep(dy0);
+  const nx0 = lerpPerlin(g00, g10, tx);
+  const nx1 = lerpPerlin(g01, g11, tx);
+  return lerpPerlin(nx0, nx1, ty);
+}
+
+/**
+ * WLED perlin8(x, y): 2D Perlin noise, uint8 output -- util.cpp. `x`/`y` are
+ * truncated to uint16_t first, matching the real function's parameter types
+ * (a real firmware quirk: callers passing a larger int silently wrap mod
+ * 65536, e.g. Noise Pal's `SEGENV.aux0 + i*scale`).
+ */
+export function perlin8(x: number, y: number): number {
+  const xs = (x & 0xffff) << 8;
+  const ys = (y & 0xffff) << 8;
+  const raw = perlin2DRaw(xs >>> 0, ys >>> 0, true);
+  return (((((raw * 1620) >> 10) + 32771) >> 8) & 0xff) >>> 0;
+}

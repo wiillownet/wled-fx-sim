@@ -869,4 +869,94 @@ describe('spot checks against known behavior', () => {
     }
     expect(sawVariation).toBe(true);
   });
+
+  it('Scanner Dual (60) is exactly Scanner (40) with check1 forced on', () => {
+    const base = {
+      length: 30,
+      sx: 200,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB] as RGB[],
+    };
+    const dual = createEffectSim(60, base);
+    const scannerForced = createEffectSim(40, { ...base, check1: true });
+    const scannerPlain = createEffectSim(40, base);
+    let matchesForced = true;
+    let differsFromPlain = false;
+    for (let t = 0; t < 2000; t += 25) {
+      const bufDual = JSON.stringify(dual.frame(t));
+      if (bufDual !== JSON.stringify(scannerForced.frame(t)))
+        matchesForced = false;
+      if (bufDual !== JSON.stringify(scannerPlain.frame(t)))
+        differsFromPlain = true;
+    }
+    expect(matchesForced).toBe(true);
+    expect(differsFromPlain).toBe(true);
+  });
+
+  it('Stream (39) shows shifting color zones along the strip over time', () => {
+    const sim = createEffectSim(39, { length: 40, sx: 128, ix: 128 });
+    const frame0 = JSON.stringify(sim.frame(0));
+    const buf3000 = sim.frame(3000);
+    expect(JSON.stringify(buf3000)).not.toBe(frame0);
+    const uniqueColors = new Set(buf3000.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(1);
+  });
+
+  it('Multi Comet (59) shows fading comet trails moving along the strip', () => {
+    const sim = createEffectSim(59, {
+      length: 30,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const early = JSON.stringify(sim.frame(0));
+    let sawLit = false;
+    for (let t = 0; t < 3000; t += 25) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 50)) sawLit = true;
+    }
+    expect(sawLit).toBe(true);
+    expect(JSON.stringify(sim.frame(3000))).not.toBe(early);
+  });
+
+  it('Pac-Man (151) draws characters that move along the strip over time', () => {
+    const params = { length: 40, sx: 128, ix: 128 };
+    const activity = createEffectSim(151, params);
+    let sawLit = false;
+    for (let t = 0; t < 2000; t += 30) {
+      const buf = activity.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 50)) sawLit = true;
+    }
+    expect(sawLit).toBe(true);
+
+    const movement = createEffectSim(151, params);
+    const early = JSON.stringify(movement.frame(200));
+    const late = JSON.stringify(movement.frame(4000));
+    expect(late).not.toBe(early);
+  });
+
+  it('Noise Pal (107) shows varied colors sampled from the chosen palette', () => {
+    // Palette 0 (default) stays black for the first several seconds (the
+    // internal random target palette hasn't rolled yet) -- a real palette
+    // bypasses that and shows immediate per-pixel variation, same treatment
+    // as the Fairy/Colorwaves/Plasma spot checks.
+    const sim = createEffectSim(107, { length: 30, sx: 64, ix: 128, pal: 26 });
+    const buf = sim.frame(500);
+    const uniqueColors = new Set(buf.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(1);
+  });
+
+  it('Noise Pal (107) stays black at the default palette until the first target palette rolls', () => {
+    const sim = createEffectSim(107, { length: 20, sx: 0, ix: 128 });
+    const early = sim.frame(500);
+    expect(early.every((px) => px[0] === 0 && px[1] === 0 && px[2] === 0)).toBe(
+      true,
+    );
+    let sawColor = false;
+    for (let t = 1000; t < 8000; t += 200) {
+      const buf = sim.frame(t);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 0)) sawColor = true;
+    }
+    expect(sawColor).toBe(true);
+  });
 });

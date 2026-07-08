@@ -11,6 +11,7 @@
  */
 import { Segment } from './segment.js';
 import {
+  LINEARBLEND,
   NOBLEND,
   PRNG,
   averageLight,
@@ -29,6 +30,7 @@ import {
   gamma8,
   gamma8inv,
   hsv2rgb_rainbow,
+  perlin8,
   qadd8,
   qsub8,
   quadwave8,
@@ -42,11 +44,13 @@ import {
   triwave16,
   triwave8,
   inoise16,
+  unpack,
   R,
   G,
   B,
   type RGB,
 } from './lib8.js';
+import { fillGradient, nblendPaletteTowardPalette } from './palettes.js';
 
 /** WLED's default frame interval (FRAMETIME_FIXED = 1000/42). */
 export const FRAMETIME = Math.trunc(1000 / 42); // 23
@@ -3911,6 +3915,405 @@ function modeTvSimulator(seg: Segment): void {
   }
 }
 
+// --- Scanner Dual (60) -------------------------------------------------------
+// Real firmware body is literally `SEGMENT.check1 = true; mode_larson_scanner();`
+// -- Scanner Dual is just Scanner (40) with its already-ported check1 mirror
+// branch forced on. Confirmed against FX.cpp mode_dual_larson_scanner() rather
+// than assumed.
+function modeScannerDual(seg: Segment): void {
+  seg.check1 = true;
+  modeLarsonScanner(seg);
+}
+
+// --- Stream / "Running Random" (39, mode_running_random) -------------------
+// Real firmware's own display name is "Stream"; the C function is
+// mode_running_random -- named to match the function, per this file's existing
+// convention (e.g. modeRainbow backs the "Colorloop" display name).
+// Stateless-looking but isn't quite: aux0 threads a PRNG seed across frames so
+// the color at a given zone boundary keeps continuity as zones scroll, and
+// aux1 remembers the last time-bucket so a boundary crossing is only detected
+// once. Uses the effect's own inline LCG (seed*2053+13849), NOT seg.rng's
+// General PRNG -- matching the real firmware's dedicated recurrence exactly
+// (same recurrence already used for Twinkle/Twinklefox/Fairy's local prng16
+// pattern elsewhere in this file).
+function modeRunningRandom(seg: Segment): void {
+  const cycleTime = 25 + 3 * (255 - seg.speed);
+  const it = Math.trunc(seg.now / cycleTime);
+  if (seg.call === 0) seg.aux0 = seg.rng.random16(); // hw_random() seeds the walk
+
+  const zoneSize = ((255 - seg.intensity) >> 4) + 1;
+  let prng16 = seg.aux0 & 0xffff;
+
+  let z = it % zoneSize;
+  let nzone = z === 0 && it !== seg.aux1;
+  for (let i = seg.length - 1; i >= 0; i--) {
+    if (nzone || z >= zoneSize) {
+      const lastrand = prng16 >> 8;
+      let diff = 0;
+      // Guaranteed to terminate: the recurrence has full period over 16 bits,
+      // so every top-byte value (incl. ones >=42 from lastrand) recurs often.
+      while (Math.abs(diff) < 42) {
+        prng16 = (prng16 * 2053 + 13849) & 0xffff;
+        diff = (prng16 >> 8) - lastrand;
+      }
+      if (nzone) {
+        seg.aux0 = prng16;
+        nzone = false;
+      }
+      z = 0;
+    }
+    seg.setPixelColor(i, seg.color_wheel(prng16 >> 8));
+    z++;
+  }
+
+  // seg.aux1 is a real firmware uint16_t (truncates on assignment); the "it
+  // changed" check above compares this truncated value against a fresh,
+  // untruncated `it`, exactly mirroring the field's storage width.
+  seg.aux1 = it & 0xffff;
+}
+
+// --- Multi Comet (59) --------------------------------------------------------
+// Small uint16_t[MAX_COMETS] scratch array of comet head positions -- cheaper
+// than it looks. Uses seg.allocateData() (byte scratch, like modeDynamicImpl)
+// rather than a WeakMap, since it's just plain position numbers.
+const MAX_COMETS = 8;
+
+function modeMultiComet(seg: Segment): void {
+  const cycleTime = 10 + (255 - seg.speed);
+  const it = Math.trunc(seg.now / cycleTime);
+  if (seg.step === it) return;
+
+  const buf = seg.allocateData(2 * MAX_COMETS);
+  const comets = new Uint16Array(buf.buffer, buf.byteOffset, MAX_COMETS);
+
+  seg.fadeToBlackBy((seg.intensity >> 1) + 128);
+
+  const hasCol2 = seg.color(2) !== 0;
+  for (let i = 0; i < MAX_COMETS; i++) {
+    if (comets[i] < seg.length) {
+      const index = comets[i];
+      if (hasCol2) {
+        seg.setPixelColor(
+          index,
+          i % 2 ? seg.color_from_palette(index, true, false, 0) : seg.color(2),
+        );
+      } else {
+        seg.setPixelColor(index, seg.color_from_palette(index, true, false, 0));
+      }
+      comets[i]++;
+    } else if (!seg.rng.random16(seg.length)) {
+      comets[i] = 0;
+    }
+  }
+
+  seg.step = it;
+}
+
+// --- Pac-Man (151) -----------------------------------------------------------
+// By Bob Loeffler with help from @dedehai and @blazoncek. A per-character
+// struct array (Pac-Man + N ghosts + power dots); real firmware packs
+// numPowerDots+numGhosts into one aux field (seg.aux0 here) to detect a
+// settings change and force a full reinit, and the array length is computed
+// at runtime from segment length + custom sliders rather than a fixed
+// constant -- same "reinit on settings change" shape as Tetrix/Oscillate, kept
+// in a WeakMap since the state is a struct array, not plain scratch bytes.
+const PACMAN_ORANGEYELLOW = 0xffcc00;
+const PACMAN_PURPLEISH = 0xb000b0;
+const PACMAN_ORANGEISH = 0xff8800;
+const PACMAN_WHITEISH = 0x999999;
+const PACMAN_YELLOW = 0xffff00;
+const PACMAN_BLUE = 0x0000ff;
+const PACMAN_GHOST_COLORS = [
+  0xff0000,
+  PACMAN_PURPLEISH,
+  0x00ffff,
+  PACMAN_ORANGEISH,
+];
+const PACMAN = 0; // PacMan is character[0]
+
+interface PacmanChar {
+  pos: number;
+  topPos: number;
+  color: number;
+  direction: boolean; // true = moving away from LED 0
+  blue: boolean;
+  eaten: boolean;
+}
+
+interface PacmanState {
+  characters: PacmanChar[];
+  numGhosts: number;
+  maxPowerDots: number;
+}
+
+const pacmanState = new WeakMap<Segment, PacmanState>();
+
+function modePacman(seg: Segment): void {
+  const maxPowerDots = Math.min(Math.trunc(seg.length / 10), 255);
+  const numPowerDots = map(seg.intensity, 0, 255, 1, maxPowerDots);
+  const numGhosts = map(seg.custom3, 0, 31, 2, 8);
+
+  // Pack two 8-bit values into one 16-bit field (seg.aux0) to detect a
+  // settings change and force a full reinitialize, same as real firmware.
+  const combinedValue = ((numPowerDots & 0xff) << 8) | (numGhosts & 0xff);
+  const settingsChanged = combinedValue !== seg.aux0;
+  seg.aux0 = combinedValue;
+
+  if (seg.length <= 16 + 2 * numGhosts) return fallbackStatic(seg);
+
+  let state = pacmanState.get(seg);
+  const expectedLen = numGhosts + maxPowerDots + 1;
+  const isInit =
+    seg.call === 0 ||
+    settingsChanged ||
+    !state ||
+    state.characters.length !== expectedLen;
+  if (!state || isInit) {
+    const characters: PacmanChar[] = Array.from(
+      { length: expectedLen },
+      () => ({
+        pos: 0,
+        topPos: 0,
+        color: 0,
+        direction: true,
+        blue: false,
+        eaten: false,
+      }),
+    );
+    state = { characters, numGhosts, maxPowerDots };
+    pacmanState.set(seg, state);
+  }
+  const character = state.characters;
+
+  // On first call (or after a settings change), topPos isn't known yet -> the
+  // full segment length stands in for it.
+  let maxBlinkPos = isInit ? seg.length - 1 : character[PACMAN].topPos;
+  if (maxBlinkPos < 20) maxBlinkPos = 20;
+  const startBlinkingGhostsLED =
+    seg.length < 64
+      ? Math.trunc(seg.length / 3)
+      : map(seg.custom1, 0, 255, 20, maxBlinkPos);
+
+  if (isInit) {
+    character[PACMAN].color = PACMAN_YELLOW;
+    character[PACMAN].pos = 0;
+    character[PACMAN].topPos = 0;
+    character[PACMAN].direction = true;
+    character[PACMAN].blue = false;
+
+    for (let i = 1; i <= numGhosts; i++) {
+      character[i].color = PACMAN_GHOST_COLORS[(i - 1) % 4];
+      character[i].pos = -2 * (i + 1);
+      character[i].direction = true;
+      character[i].blue = false;
+    }
+
+    for (let i = 0; i < numPowerDots; i++) {
+      character[i + numGhosts + 1].color = PACMAN_ORANGEYELLOW;
+      character[i + numGhosts + 1].eaten = false;
+    }
+    character[numGhosts + 1].pos = seg.length - 1; // last power dot at the end
+  }
+
+  if (seg.now > seg.step) {
+    seg.step = seg.now;
+    seg.aux1++;
+  }
+
+  if (!seg.check2) seg.fill(BLACK); // check2: Smear mode
+
+  if (seg.check1) {
+    // check1: white dots PacMan eats; check3: compact (every LED) vs spaced
+    const step = seg.check3 ? 1 : 2;
+    for (let i = seg.length - 1; i > character[PACMAN].topPos; i -= step) {
+      seg.setPixelColor(i, PACMAN_WHITEISH);
+    }
+  }
+
+  // Update power dot positions dynamically (dot 0 stays anchored at the end,
+  // set once above -- only dots 1..numPowerDots-1 are repositioned each frame).
+  const everyXLeds = Math.trunc(((seg.length - 10) << 8) / numPowerDots);
+  for (let i = 1; i < numPowerDots; i++) {
+    character[i + numGhosts + 1].pos = 10 + ((i * everyXLeds) >> 8);
+  }
+
+  // Blink power dots every 10 ticks
+  if (seg.aux1 % 10 === 0) {
+    const dotColor =
+      character[numGhosts + 1].color === PACMAN_ORANGEYELLOW
+        ? BLACK
+        : PACMAN_ORANGEYELLOW;
+    for (let i = 0; i < numPowerDots; i++) {
+      character[i + numGhosts + 1].color = dotColor;
+    }
+  }
+
+  // Blink blue ghosts when PacMan is nearing the start
+  if (
+    seg.aux1 % 15 === 0 &&
+    character[1].blue &&
+    character[PACMAN].pos <= startBlinkingGhostsLED
+  ) {
+    const ghostColor =
+      character[1].color === PACMAN_BLUE ? PACMAN_WHITEISH : PACMAN_BLUE;
+    for (let i = 1; i <= numGhosts; i++) character[i].color = ghostColor;
+  }
+
+  // Draw uneaten power dots
+  for (let i = 0; i < numPowerDots; i++) {
+    const dot = character[i + numGhosts + 1];
+    if (!dot.eaten && dot.pos >= 0 && dot.pos < seg.length) {
+      seg.setPixelColor(dot.pos, dot.color);
+    }
+  }
+
+  // Check if PacMan ate a power dot
+  for (let j = 0; j < numPowerDots; j++) {
+    const dot = character[j + numGhosts + 1];
+    if (character[PACMAN].pos === dot.pos && !dot.eaten) {
+      for (let i = 0; i <= numGhosts; i++) character[i].direction = false;
+      for (let i = 1; i <= numGhosts; i++) {
+        character[i].color = PACMAN_BLUE;
+        character[i].blue = true;
+      }
+      dot.eaten = true;
+      break; // only one power dot per frame
+    }
+  }
+
+  // Reset when PacMan reaches the start with blue ghosts
+  if (character[1].blue && character[PACMAN].pos <= 0) {
+    for (let i = 0; i <= numGhosts; i++) character[i].direction = true;
+    for (let i = 1; i <= numGhosts; i++) {
+      character[i].color = PACMAN_GHOST_COLORS[(i - 1) % 4];
+      character[i].blue = false;
+    }
+    if (character[numGhosts + 1].eaten) {
+      for (let i = 0; i < numPowerDots; i++) {
+        character[i + numGhosts + 1].eaten = false;
+      }
+      character[PACMAN].topPos = 0;
+    }
+  }
+
+  const updatePositions = seg.aux1 % map(seg.speed, 0, 255, 15, 1) === 0;
+  if (updatePositions) {
+    character[PACMAN].pos += character[PACMAN].direction ? 1 : -1;
+    for (let i = 1; i <= numGhosts; i++) {
+      character[i].pos += character[i].direction ? 1 : -1;
+    }
+  }
+
+  if (character[PACMAN].pos >= 0 && character[PACMAN].pos < seg.length) {
+    seg.setPixelColor(character[PACMAN].pos, character[PACMAN].color);
+  }
+  for (let i = 1; i <= numGhosts; i++) {
+    if (character[i].pos >= 0 && character[i].pos < seg.length) {
+      seg.setPixelColor(character[i].pos, character[i].color);
+    }
+  }
+
+  if (character[PACMAN].topPos < character[PACMAN].pos) {
+    character[PACMAN].topPos = character[PACMAN].pos;
+  }
+
+  seg.blur(seg.custom2 >> 1);
+}
+
+// --- Noise Pal (107) ---------------------------------------------------------
+// Slow noise palette by Andrew Tuline. Two runtime-built palettes cross-blend
+// via nblendPaletteTowardPalette; the blended result is indexed by 2D Perlin
+// noise per pixel. The two working palettes are per-instance state kept in a
+// WeakMap (not SEGENV.data reinterpreted as a struct), same pattern as
+// Aurora/Tetrix. A real firmware quirk kept faithfully: with the default
+// palette (0), the strip stays fully black for the first 4-6.5s (until the
+// first random target palette is rolled and the gradual per-byte blend has
+// had time to climb away from the zeroed starting palette) -- this is exactly
+// what real WLED does too, not a bug introduced here.
+interface NoisePalState {
+  palette0: RGB[];
+  palette1: RGB[];
+}
+
+const noisePalState = new WeakMap<Segment, NoisePalState>();
+
+function blackPalette16(): RGB[] {
+  return Array.from({ length: 16 }, () => [0, 0, 0] as RGB);
+}
+
+/** CHSV(h,s,v) -> RGB via the sim's existing rainbow HSV conversion -- WLED's
+ * CRGB(const CHSV&) constructor is just hsv2rgb_rainbow(h<<8, s, v). */
+function chsvToRgb(h8: number, s: number, v: number): RGB {
+  return unpack(hsv2rgb_rainbow((h8 & 0xff) << 8, s, v));
+}
+
+/** CRGBPalette16(CHSV,CHSV,CHSV,CHSV) -- fill_gradient_RGB's 4-color, onethird
+ * /twothirds-split overload (fastled_slim.cpp), reusing the same single-range
+ * fillGradient this sim's loadPalette already uses. */
+function noisePalTargetPalette(c1: RGB, c2: RGB, c3: RGB, c4: RGB): RGB[] {
+  const out = blackPalette16();
+  fillGradient(out, 0, c1, 5, c2);
+  fillGradient(out, 5, c2, 10, c3);
+  fillGradient(out, 10, c3, 15, c4);
+  return out;
+}
+
+function modeNoisePal(seg: Segment): void {
+  let state = noisePalState.get(seg);
+  if (!state) {
+    // Fresh state mirrors freshly-allocated (zeroed) firmware memory: both
+    // working palettes start all-black.
+    state = { palette0: blackPalette16(), palette1: blackPalette16() };
+    noisePalState.set(seg, state);
+  }
+
+  const scale = 15 + (seg.intensity >> 2);
+  const changePaletteMs = 4000 + seg.speed * 10;
+
+  if (seg.now - seg.step > changePaletteMs) {
+    seg.step = seg.now;
+    const baseI = seg.rng.random8();
+    // hw_random8() is real hardware entropy on-device (order of evaluation is
+    // unspecified there too); this sim just evaluates left-to-right.
+    const c1 = chsvToRgb(
+      baseI + seg.rng.random8(64),
+      255,
+      seg.rng.random8(128, 255),
+    );
+    const c2 = chsvToRgb(baseI + 128, 255, seg.rng.random8(128, 255));
+    const c3 = chsvToRgb(
+      baseI + seg.rng.random8(92),
+      192,
+      seg.rng.random8(128, 255),
+    );
+    const c4 = chsvToRgb(
+      baseI + seg.rng.random8(92),
+      255,
+      seg.rng.random8(128, 255),
+    );
+    state.palette1 = noisePalTargetPalette(c1, c2, c3, c4);
+  }
+
+  nblendPaletteTowardPalette(state.palette0, state.palette1, 48);
+
+  // A real (non-default) palette selection overrides palette0 wholesale, every
+  // frame -- cloned rather than aliased, since this sim's fixed-palette tables
+  // are shared read-only data (unlike firmware's always-by-value CRGBPalette16).
+  if (seg.palette > 0) {
+    state.palette0 = seg.getCurrentPalette().map((c) => [...c] as RGB);
+  }
+
+  for (let i = 0; i < seg.length; i++) {
+    const index = perlin8(i * scale, seg.aux0 + i * scale);
+    seg.setPixelColor(
+      i,
+      colorFromPalette(state.palette0, index, 255, LINEARBLEND),
+    );
+  }
+
+  seg.aux0 = (seg.aux0 + beatsin8_t(10, seg.now, 1, 4)) & 0xffff;
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -4006,4 +4409,9 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   70: modeNoise16_1, // "Noise 1"
   90: modeExplodingFireworks, // "Fireworks 1D"
   116: modeTvSimulator,
+  39: modeRunningRandom, // "Stream"
+  59: modeMultiComet,
+  60: modeScannerDual,
+  107: modeNoisePal,
+  151: modePacman,
 };
