@@ -711,3 +711,49 @@ export function perlin8(x: number, y: number): number {
   const raw = perlin2DRaw(xs >>> 0, ys >>> 0, true);
   return (((((raw * 1620) >> 10) + 32771) >> 8) & 0xff) >>> 0;
 }
+
+// --- 1D Perlin noise (WLED util.cpp perlin1D_raw, feeding inoise8's 1D form) -
+// Reuses the PERLIN_SHIFT/hashToGradient/smoothstep/lerpPerlin/perlin2DRaw
+// primitives already declared above (shared with inoise16/perlin8) plus a new
+// 1D gradient hash for the 1-argument form.
+
+/** WLED gradient1D (fast hash of a lattice corner + its signed offset). */
+function gradient1D(x0: number, dx: number): number {
+  let h = Math.imul(x0, 0x27d4eb2d);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x92c3412b);
+  h ^= h >>> 13;
+  h ^= h >>> 7;
+  return (hashToGradient(h) * dx) >> PERLIN_SHIFT;
+}
+
+/** 1D raw Perlin noise, range about -24691..24689 -- WLED perlin1D_raw(x, true). */
+function perlin1DRaw(x: number): number {
+  const x0 = x >>> 16;
+  const x1 = (x0 + 1) & 0xff; // is16bit: wrap back to zero at 0xFF
+  const dx0 = x & 0xffff;
+  const dx1 = dx0 - 0x10000;
+  const g0 = gradient1D(x0, dx0);
+  const g1 = gradient1D(x1, dx1);
+  const tx = smoothstep(dx0);
+  return lerpPerlin(g0, g1, tx);
+}
+
+/**
+ * 8-bit Perlin noise, 1D or 2D -- WLED perlin8(uint16_t x[, uint16_t y]).
+ * Each input is masked to 16 bits (matching the real uint16_t parameter);
+ * output is 0-255. Named `inoise8` (the term WLED's own effect comments still
+ * use for the concept, e.g. "Let's randomize ... with some Perlin noise")
+ * even though the underlying algorithm is this custom gradient noise, not
+ * FastLED's classic inoise8. Verified bit-for-bit against a native port of
+ * the real perlin1D_raw/perlin2D_raw/perlin8 C source across a spread of
+ * inputs (0, small, boundary-at-256, and large uint16 values).
+ */
+export function inoise8(x: number, y?: number): number {
+  if (y === undefined) {
+    const raw = perlin1DRaw(u16(x) << 8);
+    return (((raw * 1353) >> 10) + 32769) >> 8;
+  }
+  const raw = perlin2DRaw(u16(x) << 8, u16(y) << 8, true);
+  return (((raw * 1620) >> 10) + 32771) >> 8;
+}

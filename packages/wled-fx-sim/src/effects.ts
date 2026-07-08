@@ -30,6 +30,7 @@ import {
   gamma8,
   gamma8inv,
   hsv2rgb_rainbow,
+  inoise8,
   perlin8,
   qadd8,
   qsub8,
@@ -919,16 +920,20 @@ function modeTwinklecat(seg: Segment): void {
   twinklefoxBase(seg, true);
 }
 
-// --- Candle (88) --------------------------------------------------------------
-// The shared firmware `candle(bool multi)` helper also backs "Candle Multi"
-// (fx 102, not ported); id 88 always calls candle(false), so only its
-// single-candle branch (whole-strip flicker, no per-LED data) is reachable.
-function modeCandle(seg: Segment): void {
+// --- Candle (88) / Candle Multi (102) ----------------------------------------
+// Shared base (WLED candle(bool multi)) -- multi=false is the original single-
+// candle whole-strip flicker (id 88); multi=true (id 102) gives every LED its
+// own independent flicker state, stored per-LED in byte scratch (candleData)
+// instead of the single aux0/aux1/step scratch the i==0 candle uses.
+function candleBase(seg: Segment, multi: boolean): void {
   // Firmware rate-limits to one update per FRAMETIME via a stored last-call
   // timestamp; this sim's frame loop already steps in fixed FRAMETIME
   // increments (index.ts), so that guard is a no-op here -- and skipping it
   // avoids a spurious all-black frame 0 (now=0, stored lastcall=0 -> firmware's
-  // literal guard would trip on the very first call too).
+  // literal guard would trip on the very first call too). Same reasoning
+  // applies to the multi branch: every LED's flicker still updates once per
+  // sim frame, matching the ~1 update/FRAMETIME cadence the real rate limit
+  // targets anyway.
   const valrange = seg.intensity;
   const rndval = valrange >> 1;
   let speedFactor = 4;
@@ -936,48 +941,84 @@ function modeCandle(seg: Segment): void {
   else if (seg.speed > 99) speedFactor = 2;
   else if (seg.speed > 49) speedFactor = 3;
 
-  let s = seg.aux0;
-  let sTarget = seg.aux1;
-  let fadeStep = seg.step;
-  if (fadeStep === 0) {
-    s = 128;
-    sTarget = 130 + seg.rng.random8(4);
-    fadeStep = 1;
-  }
+  const numCandles = multi ? seg.length : 1;
+  const candleData =
+    multi && seg.length > 1
+      ? seg.allocateData(Math.max(1, seg.length - 1) * 3)
+      : null;
 
-  let newTarget = false;
-  if (sTarget > s) {
-    s = qadd8(s, fadeStep);
-    if (s >= sTarget) newTarget = true;
-  } else {
-    s = qsub8(s, fadeStep);
-    if (s <= sTarget) newTarget = true;
-  }
+  for (let i = 0; i < numCandles; i++) {
+    let d = 0;
+    let s = seg.aux0;
+    let sTarget = seg.aux1;
+    let fadeStep = seg.step;
+    if (i > 0 && candleData) {
+      d = (i - 1) * 3;
+      s = candleData[d];
+      sTarget = candleData[d + 1];
+      fadeStep = candleData[d + 2];
+    }
+    if (fadeStep === 0) {
+      s = 128;
+      sTarget = 130 + seg.rng.random8(4);
+      fadeStep = 1;
+    }
 
-  if (newTarget) {
-    sTarget = seg.rng.random8(rndval) + seg.rng.random8(rndval);
-    if (sTarget < rndval >> 1)
-      sTarget = (rndval >> 1) + seg.rng.random8(rndval);
-    sTarget += 255 - valrange;
-    const dif = Math.abs(sTarget - s);
-    fadeStep = dif >> speedFactor;
-    if (fadeStep === 0) fadeStep = 1;
-  }
+    let newTarget = false;
+    if (sTarget > s) {
+      s = qadd8(s, fadeStep);
+      if (s >= sTarget) newTarget = true;
+    } else {
+      s = qsub8(s, fadeStep);
+      if (s <= sTarget) newTarget = true;
+    }
 
-  for (let j = 0; j < seg.length; j++) {
-    seg.setPixelColor(
-      j,
-      color_blend(
-        seg.color(1),
-        seg.color_from_palette(j, true, false, 0),
-        s & 0xff,
-      ),
-    );
-  }
+    if (newTarget) {
+      sTarget = seg.rng.random8(rndval) + seg.rng.random8(rndval);
+      if (sTarget < rndval >> 1)
+        sTarget = (rndval >> 1) + seg.rng.random8(rndval);
+      sTarget += 255 - valrange;
+      const dif = Math.abs(sTarget - s);
+      fadeStep = dif >> speedFactor;
+      if (fadeStep === 0) fadeStep = 1;
+    }
 
-  seg.aux0 = s;
-  seg.aux1 = sTarget;
-  seg.step = fadeStep;
+    if (i > 0 && candleData) {
+      seg.setPixelColor(
+        i,
+        color_blend(
+          seg.color(1),
+          seg.color_from_palette(i, true, false, 0),
+          s & 0xff,
+        ),
+      );
+      candleData[d] = s;
+      candleData[d + 1] = sTarget;
+      candleData[d + 2] = fadeStep;
+    } else {
+      for (let j = 0; j < seg.length; j++) {
+        seg.setPixelColor(
+          j,
+          color_blend(
+            seg.color(1),
+            seg.color_from_palette(j, true, false, 0),
+            s & 0xff,
+          ),
+        );
+      }
+      seg.aux0 = s;
+      seg.aux1 = sTarget;
+      seg.step = fadeStep;
+    }
+  }
+}
+
+function modeCandle(seg: Segment): void {
+  candleBase(seg, false);
+}
+
+function modeCandleMulti(seg: Segment): void {
+  candleBase(seg, true);
 }
 
 // --- Sunrise (104) ------------------------------------------------------------
@@ -2152,6 +2193,141 @@ function modeBouncingBalls(seg: Segment): void {
   }
 }
 
+// --- Rolling Balls (48) -------------------------------------------------------
+// "Bouncing balls on a track", modified from Aircoookie's Bouncing Balls by
+// pjhatch. Real float physics (height/velocity/mass per ball) integrated from
+// *elapsed wall-clock time* every frame -- (now - lastBounceUpdate) / cfac --
+// not a fixed per-tick step, so a ball's position is recomputed from how long
+// it's actually been since its last bounce/update. Porting the exact
+// continuous-time integration (rather than a fixed increment) matters here:
+// a step-based approximation would visibly drift out of sync with a real
+// device as soon as the sim's step cadence differs from firmware's.
+interface RollingBall {
+  lastBounceUpdate: number; // seg.now at the last bounce/update/collision
+  mass: number;
+  velocity: number;
+  height: number; // 0..1, fraction of the strip
+}
+
+const MAX_ROLLING_BALLS = 16;
+const rollingBallsState = new WeakMap<Segment, RollingBall[]>();
+
+function modeRollingBalls(seg: Segment): void {
+  let balls = rollingBallsState.get(seg);
+  const hasCol2 = seg.color(2) !== 0;
+
+  if (seg.call === 0 || !balls) {
+    seg.fill(hasCol2 ? BLACK : seg.color(1)); // start clean
+    balls = Array.from({ length: MAX_ROLLING_BALLS }, () => {
+      let velocity = 20 * (seg.rng.random16(1000, 10000) / 10000); // 1 to 10
+      if (seg.rng.random8() < 128) velocity = -velocity; // 50% reverse direction
+      return {
+        lastBounceUpdate: seg.now,
+        velocity,
+        height: seg.rng.random16(0, 10000) / 10000, // 0. to 1.
+        mass: seg.rng.random16(1000, 10000) / 10000, // .1 to 1.
+      };
+    });
+    rollingBallsState.set(seg, balls);
+  }
+
+  const numBalls = Math.trunc(seg.intensity / 16) + 1;
+  // Aircoookie's time-scaling conversion factor for the speed slider.
+  const cfac = (scale8(8, 255 - seg.speed) + 1) * 20000;
+
+  if (seg.check3) {
+    seg.fade_out(250); // 2-8 pixel trails (optional)
+  } else if (!seg.check2) {
+    seg.fill(hasCol2 ? BLACK : seg.color(1)); // don't fill if user wants trails visible
+  }
+
+  for (let i = 0; i < numBalls; i++) {
+    const timeSinceLastUpdate = (seg.now - balls[i].lastBounceUpdate) / cfac;
+    let thisHeight = balls[i].height + balls[i].velocity * timeSinceLastUpdate;
+
+    // intensity was raised and some balls are way off the track -- reset them
+    if (thisHeight < -0.5 || thisHeight > 1.5) {
+      thisHeight = balls[i].height = seg.rng.random16(0, 10000) / 10000;
+      balls[i].lastBounceUpdate = seg.now;
+    }
+
+    // reached either end of the strip
+    if (
+      (thisHeight <= 0 && balls[i].velocity < 0) ||
+      (thisHeight >= 1 && balls[i].velocity > 0)
+    ) {
+      balls[i].velocity = -balls[i].velocity;
+      balls[i].lastBounceUpdate = seg.now;
+      balls[i].height = thisHeight;
+    }
+
+    if (seg.check1) {
+      // "Collide": elastic collisions between balls sharing the track
+      for (let j = i + 1; j < numBalls; j++) {
+        if (balls[j].velocity !== balls[i].velocity) {
+          // tcollided + balls[j].lastBounceUpdate is the actual collision
+          // time (keeps precision through the long-to-float conversion).
+          const tcollided =
+            (cfac * (balls[i].height - balls[j].height) +
+              balls[i].velocity *
+                (balls[j].lastBounceUpdate - balls[i].lastBounceUpdate)) /
+            (balls[j].velocity - balls[i].velocity);
+
+          if (
+            tcollided > 2 &&
+            tcollided < seg.now - balls[j].lastBounceUpdate
+          ) {
+            balls[i].height =
+              balls[i].height +
+              (balls[i].velocity *
+                (tcollided +
+                  (balls[j].lastBounceUpdate - balls[i].lastBounceUpdate))) /
+                cfac;
+            balls[j].height = balls[i].height;
+            balls[i].lastBounceUpdate =
+              Math.trunc(tcollided + 0.5) + balls[j].lastBounceUpdate;
+            balls[j].lastBounceUpdate = balls[i].lastBounceUpdate;
+            const vtmp = balls[i].velocity;
+            balls[i].velocity =
+              ((balls[i].mass - balls[j].mass) * vtmp +
+                2 * balls[j].mass * balls[j].velocity) /
+              (balls[i].mass + balls[j].mass);
+            balls[j].velocity =
+              ((balls[j].mass - balls[i].mass) * balls[j].velocity +
+                2 * balls[i].mass * vtmp) /
+              (balls[i].mass + balls[j].mass);
+            thisHeight =
+              balls[i].height +
+              (balls[i].velocity * (seg.now - balls[i].lastBounceUpdate)) /
+                cfac;
+          }
+        }
+      }
+    }
+
+    let color = seg.color(0);
+    if (seg.palette) {
+      color = seg.color_from_palette(
+        Math.trunc((i * 255) / numBalls),
+        false,
+        false,
+        0,
+      );
+    } else if (hasCol2) {
+      color = seg.color(i % 3);
+    }
+
+    if (thisHeight < 0) thisHeight = 0;
+    if (thisHeight > 1) thisHeight = 1;
+    // Firmware's WLED_USE_AA_PIXELS sub-pixel positioning branch is a
+    // hardware-output nicety that doesn't apply to this 1D RGB-buffer sim.
+    const pos = Math.round(thisHeight * (seg.length - 1));
+    seg.setPixelColor(pos, color);
+    balls[i].lastBounceUpdate = seg.now;
+    balls[i].height = thisHeight;
+  }
+}
+
 interface Spark {
   pos: number;
   vel: number;
@@ -2767,22 +2943,26 @@ function modeSpotsFade(seg: Segment): void {
   spotsBase(seg, tr);
 }
 
-// --- Phased (105) ----------------------------------------------------------
-function modePhased(seg: Segment): void {
+// --- Phased (105) / Phased Noise (109) ---------------------------------------
+// Shared base (WLED phased_base(uint8_t moder)) -- moder=0 (id 105) is the
+// original fixed modulus-5 sine phasing; moder=1 (id 109) replaces the fixed
+// modulus with one drawn from Perlin noise each pixel.
+function phasedBase(seg: Segment, moder: number): void {
   const allfreq = 16;
   // Firmware bit-reinterprets SEGENV.step as a float to smuggle a float
   // through a uint32 field; seg.step is already a plain number, so it holds
   // the float phase directly -- no reinterpretation needed.
   let phase = seg.step;
   const cutOff = 255 - seg.intensity;
-  const modValDefault = 5; // moder=1 (Phased Noise, fx 109) needs perlin8; not ported
+  let modVal = 5;
 
   let index = Math.trunc(seg.now / 64);
   phase += seg.speed / 32;
 
   for (let i = 0; i < seg.length; i++) {
-    const modVal = modValDefault;
+    if (moder === 1) modVal = Math.trunc(inoise8(i * 10 + i * 10) / 16);
     let val = (i + 1) * allfreq;
+    if (modVal === 0) modVal = 1;
     val += Math.trunc((phase * ((i % modVal) + 1)) / 2);
     let b = cubicwave8(val & 0xff);
     b = b > cutOff ? b - cutOff : 0;
@@ -2799,6 +2979,14 @@ function modePhased(seg: Segment): void {
   }
 
   seg.step = phase;
+}
+
+function modePhased(seg: Segment): void {
+  phasedBase(seg, 0);
+}
+
+function modePhasedNoise(seg: Segment): void {
+  phasedBase(seg, 1);
 }
 
 // --- Saw (16) ----------------------------------------------------------------
@@ -4314,6 +4502,131 @@ function modeNoisePal(seg: Segment): void {
   seg.aux0 = (seg.aux0 + beatsin8_t(10, seg.now, 1, 4)) & 0xffff;
 }
 
+// --- Stream 2 / "Random Chase" (61, mode_random_chase) -----------------------
+// Custom mode by Keith Lord (WS2812FX RandomChase.h). Firmware runs this on
+// WLED's own shared, deterministic `prng` object (prng.h) -- the exact class
+// this sim's PRNG/seg.rng already is -- saving its ambient seed, switching to
+// a local per-segment seed (aux0) for the effect's own per-pixel draws, then
+// restoring the ambient seed afterward so other effects sharing that PRNG
+// aren't disturbed. The initial seeding draws (call==0) happen *before* the
+// save point, so they deliberately do consume/advance the ambient sequence
+// once at startup -- ported faithfully, not "fixed" into the save/restore
+// bracket.
+function modeRandomChase(seg: Segment): void {
+  if (seg.call === 0) {
+    seg.step = rgbw32(
+      seg.rng.random8(),
+      seg.rng.random8(),
+      seg.rng.random8(),
+      0,
+    );
+    seg.aux0 = seg.rng.random16();
+  }
+  const prevSeed = seg.rng.getSeed(); // save so other effects aren't disturbed
+  const cycleTime = 25 + 3 * (255 - seg.speed);
+  const it = Math.trunc(seg.now / cycleTime);
+  let color = seg.step;
+  seg.rng.setSeed(seg.aux0);
+
+  for (let i = seg.length - 1; i >= 0; i--) {
+    const r =
+      seg.rng.random8(6) !== 0 ? (color >>> 16) & 0xff : seg.rng.random8();
+    const g =
+      seg.rng.random8(6) !== 0 ? (color >>> 8) & 0xff : seg.rng.random8();
+    const b = seg.rng.random8(6) !== 0 ? color & 0xff : seg.rng.random8();
+    color = rgbw32(r, g, b, 0);
+    seg.setPixelColor(i, color);
+    if (i === seg.length - 1 && seg.aux1 !== (it & 0xffff)) {
+      // new first color for the next frame
+      seg.step = color;
+      seg.aux0 = seg.rng.getSeed();
+    }
+  }
+
+  seg.aux1 = it & 0xffff;
+
+  seg.rng.setSeed(prevSeed); // restore -- don't leak this effect's PRNG state
+}
+
+// --- Fill Noise8 (69, mode_fillnoise8) ----------------------------------------
+function modeFillNoise8(seg: Segment): void {
+  if (seg.call === 0) seg.step = seg.rng.random16(); // stand-in for hw_random()
+  for (let i = 0; i < seg.length; i++) {
+    const index = inoise8(i * seg.length, seg.step + i * seg.length);
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0));
+  }
+  seg.step += beatsin8_t(seg.speed, seg.now, 1, 6);
+}
+
+// --- Shimmer (161, mode_shimmer) ----------------------------------------------
+// By DedeHai (Damian Schneider). A soft gradient band travels across the
+// strip, pauses at the far end for an intensity-controlled interval, then
+// resets and repeats. Ported: the base traveling-glow band (must-have, per
+// the batch scope). NOT ported: the optional "Granular" (custom2) modulation
+// layer that can additionally texture the band with either a sine "Zebra"
+// stripe pattern or Perlin noise (`perlin16`, a different 2-arg 16-bit noise
+// function from the `inoise8` primitive this batch added) -- its firmware
+// default is already off (c2=0 in the real metadata string), so this port's
+// behavior matches stock defaults exactly; the modulation itself is a
+// lower-priority visual extra, not implemented here.
+function modeShimmer(seg: Segment): void {
+  const buf = seg.allocateData(4); // persistent last-update timestamp
+  const lastTime = new Uint32Array(buf.buffer, buf.byteOffset, 1);
+
+  const radius = ((seg.custom1 * seg.length) >> 7) + 1; // [1, 2*len+1] px
+  const traversalDistance = (seg.length + 2 * radius) << 8; // subpixels to cross
+  const traversalTime = 200 + (255 - seg.speed) * 80; // [200, 20600] ms
+  const movementSpeed = Math.trunc((traversalDistance << 5) / traversalTime);
+  let position = seg.step; // current position in subpixels (persisted directly)
+  const inputState = (seg.intensity << 8) | seg.custom1;
+
+  if (seg.call === 0 || inputState !== seg.aux1) {
+    position = -(radius << 8);
+    seg.aux0 = 0; // aux0 is the pause timer
+    lastTime[0] = seg.now;
+    seg.aux1 = inputState; // save user input state
+  }
+
+  if (seg.speed) {
+    const deltaTime = (seg.now - lastTime[0]) & 0x7f; // clamp to avoid overflow
+    lastTime[0] = seg.now;
+
+    if (seg.aux0 > 0) {
+      seg.aux0 = seg.aux0 > deltaTime ? seg.aux0 - deltaTime : 0;
+    } else {
+      const moveStep = 1 + ((movementSpeed * deltaTime) >> 5);
+      position += moveStep;
+      const endPosition = (seg.length + radius) << 8;
+      if (position > endPosition) {
+        seg.aux0 = seg.intensity * 236; // [0, 60180] ms pause
+        if (seg.check3) seg.aux0 = seg.rng.random16(seg.aux0 + 1000); // "Sporadic"
+        position = -(radius << 8); // reset to start (out of frame)
+      }
+      seg.step = position; // save back
+    }
+
+    if (seg.check2) position = (seg.length << 8) - position; // "Reverse"
+  } else {
+    position = seg.length << 7; // static in the center at speed=0
+  }
+
+  for (let i = 0; i < seg.length; i++) {
+    const dist = Math.abs(position - (i << 8));
+    if (dist < radius << 8) {
+      const color = seg.color_from_palette(
+        Math.trunc((i * 255) / seg.length),
+        false,
+        false,
+        0,
+      );
+      const blend = Math.trunc(dist / radius);
+      seg.setPixelColor(i, color_blend(color, seg.color(1), blend));
+    } else {
+      seg.setPixelColor(i, seg.color(1));
+    }
+  }
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -4414,4 +4727,10 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   60: modeScannerDual,
   107: modeNoisePal,
   151: modePacman,
+  48: modeRollingBalls,
+  61: modeRandomChase, // "Stream 2"
+  69: modeFillNoise8,
+  102: modeCandleMulti,
+  109: modePhasedNoise,
+  161: modeShimmer,
 };

@@ -14,6 +14,7 @@ import {
   colorFromPalette,
   cos8_t,
   hsv2rgb_rainbow,
+  inoise8,
   lerp8by8,
   qadd8,
   qsub8,
@@ -199,5 +200,77 @@ describe('PRNG (deterministic, seeded)', () => {
       expect(r16).toBeGreaterThanOrEqual(0);
       expect(r16).toBeLessThan(1000);
     }
+  });
+});
+
+describe('inoise8 (WLED perlin8, fixed-point gradient noise)', () => {
+  // Anchors are the exact outputs of a native port of WLED's real
+  // perlin1D_raw/perlin2D_raw/perlin8 C source (util.cpp), compiled and run
+  // standalone to cross-check this port bit-for-bit -- not hand-derived.
+  it('1-arg (1D) hits the firmware anchors', () => {
+    const anchors: [number, number][] = [
+      [0, 128],
+      [1, 126],
+      [5, 121],
+      [10, 115],
+      [16, 108],
+      [20, 104],
+      [30, 95],
+      [50, 82],
+      [100, 75],
+      [200, 128],
+      [255, 128],
+      [256, 128],
+      [500, 134],
+      [1000, 139],
+      [5000, 171],
+      [12345, 161],
+      [65535, 129],
+    ];
+    for (const [x, expected] of anchors) expect(inoise8(x)).toBe(expected);
+  });
+
+  it('2-arg (2D) hits the firmware anchors', () => {
+    const anchors: [number, number, number][] = [
+      [0, 0, 128],
+      [1, 0, 127],
+      [0, 1, 127],
+      [5, 5, 120],
+      [10, 20, 108],
+      [100, 200, 150],
+      [255, 255, 128],
+      [1000, 2000, 144],
+      [12345, 6789, 69],
+      [65535, 65535, 129],
+      [300, 7, 105],
+      [7, 300, 87],
+    ];
+    for (const [x, y, expected] of anchors)
+      expect(inoise8(x, y)).toBe(expected);
+  });
+
+  it('stays within uint8 range and is deterministic', () => {
+    for (let x = 0; x < 2000; x += 37) {
+      const v1 = inoise8(x);
+      expect(v1).toBeGreaterThanOrEqual(0);
+      expect(v1).toBeLessThanOrEqual(255);
+      expect(inoise8(x)).toBe(v1); // pure function of its input
+
+      const v2 = inoise8(x, x * 3 + 1);
+      expect(v2).toBeGreaterThanOrEqual(0);
+      expect(v2).toBeLessThanOrEqual(255);
+      expect(inoise8(x, x * 3 + 1)).toBe(v2);
+    }
+  });
+
+  it('varies smoothly rather than jumping randomly (it is noise, not random8)', () => {
+    let bigJump = false;
+    let prev = inoise8(0);
+    for (let x = 1; x < 500; x++) {
+      const cur = inoise8(x * 20);
+      if (Math.abs(cur - prev) > 40) bigJump = true;
+      prev = cur;
+    }
+    expect(bigJump).toBe(false);
   });
 });

@@ -110,7 +110,13 @@ describe('animated effects change over time', () => {
   // it with mcol<3 and the default pbri (255), so at the test's default
   // "Default" palette it always returns the raw, unchanging segment color --
   // genuinely animated only once a real palette is set (see its spot check).
-  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70]);
+  // Fill Noise8 (69) samples a palette purely by index (no brightness/blend
+  // modulation of its own) -- at this test's default palette 0,
+  // color_from_palette's real "Default palette" shortcut discards the index
+  // argument entirely, so it renders a static solid color (a real firmware
+  // characteristic, confirmed against a non-default palette in the spot
+  // checks below, not a port bug).
+  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70, 69]);
   const animated = portedFxIds().filter((id) => !staticIds.has(id));
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {
@@ -958,5 +964,95 @@ describe('spot checks against known behavior', () => {
       if (buf.some((px) => px[0] + px[1] + px[2] > 0)) sawColor = true;
     }
     expect(sawColor).toBe(true);
+  });
+  it('Rolling Balls (48) lights pixels within strip bounds over time', () => {
+    const sim = createEffectSim(48, {
+      length: 30,
+      sx: 128,
+      ix: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    let sawLit = false;
+    for (let t = 0; t < 4000; t += 40) {
+      const buf = sim.frame(t);
+      expect(buf.length).toBe(30);
+      if (buf.some((px) => px[0] + px[1] + px[2] > 50)) sawLit = true;
+    }
+    expect(sawLit).toBe(true);
+  });
+
+  it('Candle Multi (102) gives each pixel independent flicker, unlike Candle (88)', () => {
+    const params = {
+      length: 20,
+      sx: 96,
+      ix: 224,
+      colors: [[255, 180, 60], BLACK_RGB, BLACK_RGB] as RGB[],
+    };
+    const single = createEffectSim(88, params);
+    const multi = createEffectSim(102, params);
+    const bufSingle = single.frame(400);
+    const bufMulti = multi.frame(400);
+    const uniqSingle = new Set(bufSingle.map((px) => px.join(',')));
+    const uniqMulti = new Set(bufMulti.map((px) => px.join(',')));
+    expect(uniqSingle.size).toBe(1); // whole-strip flicker shares one state
+    expect(uniqMulti.size).toBeGreaterThan(1); // per-LED flicker diverges
+  });
+
+  it('Shimmer (161) moves its glow band along the strip over time', () => {
+    const sim = createEffectSim(161, {
+      length: 40,
+      sx: 128,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const brightestIndex = (buf: RGB[]) =>
+      buf.reduce(
+        (best, px, i) =>
+          px[0] + px[1] + px[2] > buf[best][0] + buf[best][1] + buf[best][2]
+            ? i
+            : best,
+        0,
+      );
+    const early = brightestIndex(sim.frame(200));
+    const late = brightestIndex(sim.frame(3000));
+    expect(early).not.toBe(late);
+  });
+
+  it('Stream 2 / "Random Chase" (61) shifts its random pixel pattern over time', () => {
+    const sim = createEffectSim(61, { length: 20, sx: 128 });
+    const early = JSON.stringify(sim.frame(200));
+    const late = JSON.stringify(sim.frame(4000));
+    expect(late).not.toBe(early);
+  });
+
+  it('Fill Noise8 (69) shows multiple distinct hues across the strip with a real palette', () => {
+    // Like Fairy/Colorwaves/Plasma, palette 0 ("Default") short-circuits
+    // color_from_palette to the raw segment color regardless of index --
+    // this effect has no other time/space-varying factor, so an actual
+    // palette is needed to see its per-pixel noise texture (also why 69 is
+    // excluded from the generic "animated effects" contract test above).
+    const sim = createEffectSim(69, { length: 30, sx: 128, pal: 26 });
+    const buf = sim.frame(1000);
+    const uniqueColors = new Set(buf.map((px) => px.join(',')));
+    expect(uniqueColors.size).toBeGreaterThan(3);
+  });
+
+  it('Phased Noise (109) differs from Phased (105) under the same params', () => {
+    const params = {
+      length: 30,
+      sx: 128,
+      ix: 128,
+      colors: [RED, GREEN, BLUE] as RGB[],
+    };
+    const phased = createEffectSim(105, params);
+    const phasedNoise = createEffectSim(109, params);
+    let sawDifference = false;
+    for (let t = 0; t < 3000; t += 50) {
+      if (
+        JSON.stringify(phased.frame(t)) !== JSON.stringify(phasedNoise.frame(t))
+      ) {
+        sawDifference = true;
+      }
+    }
+    expect(sawDifference).toBe(true);
   });
 });
