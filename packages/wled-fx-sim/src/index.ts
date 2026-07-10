@@ -34,6 +34,10 @@ export interface EffectSimParams {
   check1?: boolean;
   check2?: boolean;
   check3?: boolean;
+  /** Custom sliders c1/c2/c3 (0-255); effect-specific meaning. */
+  custom1?: number;
+  custom2?: number;
+  custom3?: number;
   /** PRNG seed -- fix it for a reproducible preview (default matches WLED's). */
   seed?: number;
 }
@@ -106,6 +110,9 @@ export function createEffectSim(
     seg.check1 = params.check1 ?? false;
     seg.check2 = params.check2 ?? false;
     seg.check3 = params.check3 ?? false;
+    seg.custom1 = clamp8(params.custom1 ?? 0);
+    seg.custom2 = clamp8(params.custom2 ?? 0);
+    seg.custom3 = clamp8(params.custom3 ?? 0);
   };
 
   let seg = new Segment(length, seed);

@@ -251,6 +251,27 @@ describe('spot checks against known behavior', () => {
     expect(maxLum).toBeGreaterThan(minLum * 2);
   });
 
+  it('Perlin Move (147) trail length tracks custom1 (c1 reaches the sim)', () => {
+    // custom1 gates fade retention: fade_out(255 - custom1). A high c1 keeps
+    // pixels lit far longer, so the strip accumulates much more total light.
+    // Proves the c1/c2/c3 params actually flow into the sim (the fidelity fix).
+    // Low intensity (few fresh pixels/frame) so the persisted trail dominates.
+    const lit = (custom1: number) => {
+      const sim = createEffectSim(147, {
+        length: LEN,
+        sx: 128,
+        ix: 8,
+        custom1,
+      });
+      let sum = 0;
+      for (let t = 0; t < 2000; t += 25) {
+        for (const px of sim.frame(t)) sum += px[0] + px[1] + px[2];
+      }
+      return sum;
+    };
+    expect(lit(255)).toBeGreaterThan(lit(0) * 1.4);
+  });
+
   it('Candle (88) flickers within a bounded range, never fully off or maxed', () => {
     const sim = createEffectSim(88, {
       length: LEN,
