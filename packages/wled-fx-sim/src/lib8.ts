@@ -185,7 +185,7 @@ export function beatsin88_t(
 }
 
 /** S-curve ease, uint8 in/out -- FastLED ease8InOutCubic (fastled_slim.cpp). */
-function ease8InOutCubic(i: number): number {
+export function ease8InOutCubic(i: number): number {
   const ii = u8(i) * u8(i);
   const factor = (3 << 8) - (u8(i) << 1); // 3 - 2i, Q8
   return (ii * factor) >>> 16;

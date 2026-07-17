@@ -13,6 +13,7 @@ import { Segment } from './segment.js';
 import { Segment2D } from './segment-2d.js';
 import {
   LINEARBLEND,
+  LINEARBLEND_NOWRAP,
   NOBLEND,
   PRNG,
   averageLight,
@@ -25,6 +26,7 @@ import {
   color_add,
   color_blend,
   color_fade,
+  lerp8by8,
   cos_approx,
   cubicwave8,
   gamma32inv,
@@ -41,8 +43,10 @@ import {
   rgbw32,
   scale16,
   scale8,
+  scale8_video,
   sin_approx,
   cos8_t as cos8,
+  ease8InOutCubic,
   sin16_t as sin16,
   sin8_t as sin8,
   triwave16,
@@ -6051,6 +6055,1652 @@ function modeParticleFire1D(seg: Segment): void {
 // so a degenerate 1×N matrix never crashes.
 // ============================================================================
 
+const DARKSLATEGRAY = 0x2f4f4f;
+
+// --- Black Hole (183) -------------------------------------------------------
+function mode2DBlackHole(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  seg.fadeToBlackBy(16 + (seg.speed >> 3)); // fading trails
+  const t = Math.trunc(seg.now / 128);
+  // outer stars
+  for (let i = 0; i < 8; i++) {
+    const x = beatsin8_t(
+      seg.custom1 >> 3,
+      seg.now,
+      0,
+      cols - 1,
+      0,
+      (i % 2 ? 128 : 0) + t * i,
+    );
+    const y = beatsin8_t(
+      seg.intensity >> 3,
+      seg.now,
+      0,
+      rows - 1,
+      0,
+      (i % 2 ? 192 : 64) + t * i,
+    );
+    seg.addPixelColorXY(
+      x,
+      y,
+      seg.color_from_palette(i * 32, false, false, seg.check1 ? 0 : 255),
+    );
+  }
+  // inner stars
+  for (let i = 0; i < 4; i++) {
+    const x = beatsin8_t(
+      seg.custom2 >> 3,
+      seg.now,
+      Math.trunc(cols / 4),
+      cols - 1 - Math.trunc(cols / 4),
+      0,
+      (i % 2 ? 128 : 0) + t * i,
+    );
+    const y = beatsin8_t(
+      seg.custom3,
+      seg.now,
+      Math.trunc(rows / 4),
+      rows - 1 - Math.trunc(rows / 4),
+      0,
+      (i % 2 ? 192 : 64) + t * i,
+    );
+    seg.addPixelColorXY(
+      x,
+      y,
+      seg.color_from_palette(255 - i * 64, false, false, seg.check1 ? 0 : 255),
+    );
+  }
+  // central white dot
+  seg.setPixelColorXY(Math.trunc(cols / 2), Math.trunc(rows / 2), WHITE);
+  if (seg.check3) seg.blur(16, cols * rows < 100);
+}
+
+// --- Colored Bursts (167) ---------------------------------------------------
+function mode2DColoredBursts(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  if (seg.call === 0) seg.aux0 = 0; // start with red hue
+
+  const dot = seg.check3;
+  const grad = seg.check1;
+  const numLines = Math.trunc(seg.intensity / 16) + 1;
+
+  seg.aux0 = (seg.aux0 + 1) & 0xffff; // hue
+  seg.fadeToBlackBy(40 - (seg.check2 ? 8 : 0));
+  const palette = seg.getCurrentPalette();
+  for (let i = 0; i < numLines; i++) {
+    const x1 = beatsin8_t(2 + Math.trunc(seg.speed / 16), seg.now, 0, cols - 1);
+    const x2 = beatsin8_t(1 + Math.trunc(seg.speed / 16), seg.now, 0, rows - 1);
+    const y1 = beatsin8_t(
+      5 + Math.trunc(seg.speed / 16),
+      seg.now,
+      0,
+      cols - 1,
+      0,
+      i * 24,
+    );
+    const y2 = beatsin8_t(
+      3 + Math.trunc(seg.speed / 16),
+      seg.now,
+      0,
+      rows - 1,
+      0,
+      i * 48 + 64,
+    );
+    const color = colorFromPalette(
+      palette,
+      Math.trunc((i * 255) / numLines) + (seg.aux0 & 0xff),
+      255,
+      LINEARBLEND,
+    );
+
+    const xsteps = Math.abs(x1 - y1) + 1;
+    const ysteps = Math.abs(x2 - y2) + 1;
+    const steps = xsteps >= ysteps ? xsteps : ysteps;
+    // gradient line
+    for (let j = 1; j <= steps; j++) {
+      const rate = Math.trunc((j * 255) / steps);
+      const dx = lerp8by8(x1, y1, rate);
+      const dy = lerp8by8(x2, y2, rate);
+      seg.addPixelColorXY(dx, dy, color);
+      if (grad) seg.fadePixelColorXY(dx, dy, rate);
+    }
+
+    if (dot) {
+      // white points at the ends of the line
+      seg.setPixelColorXY(x1, x2, WHITE);
+      seg.setPixelColorXY(y1, y2, DARKSLATEGRAY);
+    }
+  }
+  seg.blur(seg.custom3 >> 1, seg.check2);
+}
+
+// --- DNA (152) --------------------------------------------------------------
+function mode2DDna(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  seg.fadeToBlackBy(64);
+  const palette = seg.getCurrentPalette();
+  for (let i = 0; i < cols; i++) {
+    seg.setPixelColorXY(
+      i,
+      beatsin8_t(Math.trunc(seg.speed / 8), seg.now, 0, rows - 1, 0, i * 4),
+      colorFromPalette(
+        palette,
+        i * 5 + Math.trunc(seg.now / 17),
+        beatsin8_t(5, seg.now, 55, 255, 0, i * 10),
+        LINEARBLEND,
+      ),
+    );
+    seg.setPixelColorXY(
+      i,
+      beatsin8_t(
+        Math.trunc(seg.speed / 8),
+        seg.now,
+        0,
+        rows - 1,
+        0,
+        i * 4 + 128,
+      ),
+      colorFromPalette(
+        palette,
+        i * 5 + 128 + Math.trunc(seg.now / 17),
+        beatsin8_t(5, seg.now, 55, 255, 0, i * 10 + 128),
+        LINEARBLEND,
+      ),
+    );
+  }
+  seg.blur(Math.trunc(seg.intensity / (8 - (seg.check1 ? 2 : 0))), seg.check1);
+}
+
+// --- DNA Spiral (182) -------------------------------------------------------
+function mode2DDnaSpiral(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const speeds = Math.trunc(seg.speed / 2) + 7;
+  const freq = Math.trunc(seg.intensity / 8);
+
+  const ms = Math.trunc(seg.now / 20);
+  seg.fadeToBlackBy(135);
+  const palette = seg.getCurrentPalette();
+
+  for (let i = 0; i < rows; i++) {
+    let x =
+      beatsin8_t(speeds, seg.now, 0, cols - 1, 0, i * freq) +
+      beatsin8_t((speeds - 7) & 0xff, seg.now, 0, cols - 1, 0, i * freq + 128);
+    let x1 =
+      beatsin8_t(speeds, seg.now, 0, cols - 1, 0, 128 + i * freq) +
+      beatsin8_t(
+        (speeds - 7) & 0xff,
+        seg.now,
+        0,
+        cols - 1,
+        0,
+        128 + 64 + i * freq,
+      );
+    const hue = Math.trunc((i * 128) / rows) + ms;
+    // skip every 4th row every now and then (fade it more)
+    if ((i + Math.trunc(ms / 8)) & 3) {
+      x = Math.trunc(x / 2);
+      x1 = Math.trunc(x1 / 2);
+      const steps = Math.abs(x - x1) + 1;
+      const positive = x1 >= x; // direction of drawing
+      for (let k = 1; k <= steps; k++) {
+        const rate = Math.trunc((k * 255) / steps);
+        const dx = positive ? x + k - 1 : x - k + 1; // lerp without holes
+        seg.addPixelColorXY(
+          dx,
+          i,
+          colorFromPalette(palette, hue, 255, LINEARBLEND),
+        );
+        seg.fadePixelColorXY(dx, i, rate);
+      }
+      seg.setPixelColorXY(x, i, DARKSLATEGRAY);
+      seg.setPixelColorXY(x1, i, WHITE);
+    }
+  }
+  seg.blur(
+    Math.trunc((seg.custom1 * 3) / (6 + (seg.check1 ? 1 : 0))),
+    seg.check1,
+  );
+}
+
+// --- Drift (164) ------------------------------------------------------------
+function mode2DDrift(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const colsCenter = (cols >> 1) + (cols % 2);
+  const rowsCenter = (rows >> 1) + (rows % 2);
+
+  seg.fadeToBlackBy(128);
+  const maxDim = Math.max(cols, rows) / 2;
+  const t = Math.trunc(seg.now / (32 - (seg.speed >> 3)));
+  const t20 = Math.trunc(t / 20);
+  const palette = seg.getCurrentPalette();
+  for (let i = 1.0; i < maxDim; i += 0.25) {
+    const angle = (t * (maxDim - i) * Math.PI) / 180; // radians()
+    const mySin = Math.trunc(sin_approx(angle) * i);
+    const myCos = Math.trunc(cos_approx(angle) * i);
+    const color = colorFromPalette(
+      palette,
+      Math.trunc(i * 20 + t20),
+      255,
+      LINEARBLEND,
+    );
+    seg.setPixelColorXY(colsCenter + mySin, rowsCenter + myCos, color);
+    if (seg.check1)
+      seg.setPixelColorXY(colsCenter + myCos, rowsCenter + mySin, color);
+  }
+  seg.blur(seg.intensity >> (3 - (seg.check2 ? 1 : 0)), seg.check2);
+}
+
+// --- Firenoise (149) --------------------------------------------------------
+// the effect's built-in non-palette fire ramp (CRGBPalette16 literal)
+const FIRENOISE_PAL: RGB[] = [
+  [0, 0, 0],
+  [0, 0, 0],
+  [0, 0, 0],
+  [0, 0, 0],
+  [255, 0, 0],
+  [255, 0, 0],
+  [255, 0, 0],
+  [255, 140, 0],
+  [255, 140, 0],
+  [255, 140, 0],
+  [255, 165, 0],
+  [255, 165, 0],
+  [255, 255, 0],
+  [255, 165, 0],
+  [255, 255, 0],
+  [255, 255, 0],
+];
+
+function mode2DFirenoise(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const xscale = seg.intensity * 4;
+  const yscale = seg.speed * 8;
+
+  const pal = seg.check1 ? seg.getCurrentPalette() : FIRENOISE_PAL;
+  for (let j = 0; j < cols; j++) {
+    for (let i = 0; i < rows; i++) {
+      const indexx = perlin8(
+        Math.trunc((j * yscale * rows) / 255),
+        i * xscale + Math.trunc(seg.now / 4),
+      );
+      seg.setPixelColorXY(
+        j,
+        i,
+        colorFromPalette(
+          pal,
+          Math.min(Math.trunc((i * indexx) / 11), 225),
+          Math.trunc((i * 255) / rows),
+          LINEARBLEND,
+        ),
+      );
+    }
+  }
+}
+
+// --- Frizzles (177) ---------------------------------------------------------
+function mode2DFrizzles(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  seg.fadeToBlackBy(16 + (seg.check1 ? 10 : 0));
+  const palette = seg.getCurrentPalette();
+  for (let i = 8; i > 0; i--) {
+    seg.addPixelColorXY(
+      beatsin8_t((Math.trunc(seg.speed / 8) + i) & 0xff, seg.now, 0, cols - 1),
+      beatsin8_t(
+        (Math.trunc(seg.intensity / 8) - i) & 0xff,
+        seg.now,
+        0,
+        rows - 1,
+      ),
+      colorFromPalette(
+        palette,
+        beatsin8_t(12, seg.now, 0, 255),
+        255,
+        LINEARBLEND,
+      ),
+    );
+  }
+  seg.blur(seg.custom1 >> (3 + (seg.check1 ? 1 : 0)), seg.check1);
+}
+
+// --- Julia (168) ------------------------------------------------------------
+interface JuliaState {
+  xcen: number;
+  ycen: number;
+  xymag: number;
+}
+const JULIA_STATE = new WeakMap<Segment, JuliaState>();
+
+function mode2DJulia(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  let st = JULIA_STATE.get(seg);
+  if (!st || seg.call === 0) {
+    st = { xcen: 0, ycen: 0, xymag: 1.0 };
+    JULIA_STATE.set(seg, st);
+    // firmware re-centers the location widgets on restart
+    seg.custom1 = 128;
+    seg.custom2 = 128;
+    seg.custom3 = 16;
+    seg.intensity = 24;
+  }
+
+  st.xcen += (seg.custom1 - 128) / 100000;
+  st.ycen += (seg.custom2 - 128) / 100000;
+  st.xymag += ((seg.custom3 - 16) << 3) / 100000;
+  if (st.xymag < 0.01) st.xymag = 0.01;
+  if (st.xymag > 1.0) st.xymag = 1.0;
+
+  const clampf = (v: number, lo: number, hi: number): number =>
+    v < lo ? lo : v > hi ? hi : v;
+  const xmin = clampf(st.xcen - st.xymag, -1.2, 1.2);
+  const xmax = clampf(st.xcen + st.xymag, -1.2, 1.2);
+  const ymin = clampf(st.ycen - st.xymag, -0.8, 1.0);
+  const ymax = clampf(st.ycen + st.xymag, -0.8, 1.0);
+
+  const maxIterations = Math.trunc(seg.intensity / 2);
+  const maxCalc = 16.0;
+
+  let reAl = -0.94299; // PixelBlaze example
+  let imAg = 0.3162;
+  reAl += sin16(seg.now * 34) / 655340;
+  imAg += sin16(seg.now * 26) / 655340;
+
+  const dx = (xmax - xmin) / cols;
+  const dy = (ymax - ymin) / rows;
+
+  let y = ymin;
+  for (let j = 0; j < rows; j++) {
+    let x = xmin;
+    for (let i = 0; i < cols; i++) {
+      // iterate z = z^2 + c; does z tend towards infinity?
+      let a = x;
+      let b = y;
+      let iter = 0;
+      while (iter < maxIterations) {
+        const aa = a * a;
+        const bb = b * b;
+        if (aa + bb > maxCalc) break;
+        b = 2 * a * b + imAg;
+        a = aa - bb + reAl;
+        iter++;
+      }
+      if (iter === maxIterations) {
+        seg.setPixelColorXY(i, j, 0);
+      } else {
+        seg.setPixelColorXY(
+          i,
+          j,
+          seg.color_from_palette(
+            Math.trunc((iter * 255) / maxIterations),
+            false,
+            false,
+            0,
+          ),
+        );
+      }
+      x += dx;
+    }
+    y += dy;
+  }
+  if (seg.check1) seg.blur(100, true);
+}
+
+// --- Lissajous (176) --------------------------------------------------------
+function mode2DLissajous(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  seg.fadeToBlackBy(seg.intensity);
+  const phase = Math.trunc((seg.now * (1 + seg.custom3)) / 32);
+
+  for (let i = 0; i < 256; i++) {
+    let xlocn = sin8(Math.trunc(phase / 2) + Math.trunc((i * seg.speed) / 32));
+    let ylocn = cos8(Math.trunc(phase / 2) + i * 2);
+    xlocn =
+      cols < 2
+        ? 1
+        : Math.trunc((map(2 * xlocn, 0, 511, 0, 2 * (cols - 1)) + 1) / 2);
+    ylocn =
+      rows < 2
+        ? 1
+        : Math.trunc((map(2 * ylocn, 0, 511, 0, 2 * (rows - 1)) + 1) / 2);
+    seg.setPixelColorXY(
+      xlocn,
+      ylocn,
+      seg.color_from_palette(Math.trunc(seg.now / 100) + i, false, false, 0),
+    );
+  }
+  seg.blur(seg.custom1 >> (1 + (seg.check1 ? 3 : 0)), seg.check1);
+}
+
+// --- Matrix (153) -----------------------------------------------------------
+function mode2DMatrix(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+  const XY = (x: number, y: number): number => (x % cols) + (y % rows) * cols;
+
+  const dataSize = (seg.length + 7) >> 3; // 1 bit per LED for trails
+  const data = seg.allocateData(dataSize);
+
+  if (seg.call === 0) {
+    seg.fill(BLACK);
+    seg.step = 0;
+  }
+
+  const fade = map(seg.custom1, 0, 255, 50, 250); // trail size
+  const speed = (256 - seg.speed) >> map(Math.min(rows, 150), 0, 150, 0, 3);
+
+  let spawnColor: number;
+  let trailColor: number;
+  if (seg.check1) {
+    spawnColor = seg.color(0);
+    trailColor = seg.color(1);
+  } else {
+    spawnColor = rgbw32(175, 255, 175, 0);
+    trailColor = rgbw32(27, 130, 39, 0);
+  }
+
+  let emptyScreen = true;
+  if (seg.now - seg.step >= speed) {
+    seg.step = seg.now;
+    // falling codes keep color and add trail pixels; all others fade
+    seg.fadeToBlackBy(fade);
+    for (let row = rows - 1; row >= 0; row--) {
+      for (let col = 0; col < cols; col++) {
+        let index = XY(col, row) >> 3;
+        let bitNum = XY(col, row) & 0x07;
+        if ((data[index] >> bitNum) & 1) {
+          seg.setPixelColorXY(col, row, trailColor); // trail
+          data[index] &= ~(1 << bitNum);
+          if (row < rows - 1) {
+            seg.setPixelColorXY(col, row + 1, spawnColor);
+            index = XY(col, row + 1) >> 3;
+            bitNum = XY(col, row + 1) & 0x07;
+            data[index] |= 1 << bitNum;
+            emptyScreen = false;
+          }
+        }
+      }
+    }
+
+    // spawn new falling code
+    if (seg.rng.random8() <= seg.intensity || emptyScreen) {
+      const spawnX = seg.rng.random8(cols);
+      seg.setPixelColorXY(spawnX, 0, spawnColor);
+      const index = XY(spawnX, 0) >> 3;
+      const bitNum = XY(spawnX, 0) & 0x07;
+      data[index] |= 1 << bitNum;
+    }
+  }
+}
+
+// --- Metaballs (154) --------------------------------------------------------
+function mode2DMetaballs(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const speed = 0.25 * (1 + (seg.speed >> 6));
+  const sqrt32 = (v: number): number => Math.trunc(Math.sqrt(v));
+
+  // two random moving points
+  const x2 = map(
+    perlin8(Math.trunc(seg.now * speed), 25355, 685),
+    0,
+    255,
+    0,
+    cols - 1,
+  );
+  const y2 = map(
+    perlin8(Math.trunc(seg.now * speed), 355, 11685),
+    0,
+    255,
+    0,
+    rows - 1,
+  );
+  const x3 = map(
+    perlin8(Math.trunc(seg.now * speed), 55355, 6685),
+    0,
+    255,
+    0,
+    cols - 1,
+  );
+  const y3 = map(
+    perlin8(Math.trunc(seg.now * speed), 25355, 22685),
+    0,
+    255,
+    0,
+    rows - 1,
+  );
+
+  // and one Lissajous function
+  const x1 = beatsin8_t(Math.trunc(23 * speed) & 0xff, seg.now, 0, cols - 1);
+  const y1 = beatsin8_t(Math.trunc(28 * speed) & 0xff, seg.now, 0, rows - 1);
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      // weighted sum of distances of the 3 points from this pixel
+      let dx = Math.abs(x - x1);
+      let dy = Math.abs(y - y1);
+      let dist = 2 * sqrt32(dx * dx + dy * dy);
+
+      dx = Math.abs(x - x2);
+      dy = Math.abs(y - y2);
+      dist += sqrt32(dx * dx + dy * dy);
+
+      dx = Math.abs(x - x3);
+      dy = Math.abs(y - y3);
+      dist += sqrt32(dx * dx + dy * dy);
+
+      const color = dist ? Math.trunc(1000 / dist) : 255;
+
+      if (color > 0 && color < 60) {
+        seg.setPixelColorXY(
+          x,
+          y,
+          seg.color_from_palette(
+            map(color * 9, 9, 531, 0, 255),
+            false,
+            false,
+            0,
+          ),
+        );
+      } else {
+        seg.setPixelColorXY(x, y, seg.color_from_palette(0, false, false, 0));
+      }
+      // show the 3 points, too
+      seg.setPixelColorXY(x1, y1, WHITE);
+      seg.setPixelColorXY(x2, y2, WHITE);
+      seg.setPixelColorXY(x3, y3, WHITE);
+    }
+  }
+}
+
+// --- Noise2D (146) ----------------------------------------------------------
+function mode2DNoise(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const scale = seg.intensity + 2;
+  const palette = seg.getCurrentPalette();
+  const z = Math.trunc(seg.now / (16 - Math.trunc(seg.speed / 16)));
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const pixelHue8 = perlin8(x * scale, y * scale, z);
+      seg.setPixelColorXY(x, y, colorFromPalette(palette, pixelHue8));
+    }
+  }
+}
+
+// --- Plasma Ball (178) ------------------------------------------------------
+function mode2DPlasmaball(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  seg.fadeToBlackBy(seg.custom1 >> 2);
+  const t = Math.trunc((seg.now * 8) / (256 - seg.speed));
+  const palette = seg.getCurrentPalette();
+  for (let i = 0; i < cols; i++) {
+    const thisVal = perlin8(i * 30, t, t);
+    const thisMax = map(thisVal, 0, 255, 0, cols - 1);
+    for (let j = 0; j < rows; j++) {
+      const thisVal_ = perlin8(t, j * 30, t);
+      const thisMax_ = map(thisVal_, 0, 255, 0, rows - 1);
+      const x = i + thisMax_ - Math.trunc(cols / 2);
+      const y = j + thisMax - Math.trunc(cols / 2);
+      const cx = i + thisMax_;
+      const cy = j + thisMax;
+
+      const lit =
+        (x - y > -2 && x - y < 2) ||
+        (cols - 1 - x - y > -2 && cols - 1 - x - y < 2) ||
+        cols - cx === 0 ||
+        cols - 1 - cx === 0 ||
+        rows - cy === 0 ||
+        rows - 1 - cy === 0;
+      seg.addPixelColorXY(
+        i,
+        j,
+        lit
+          ? colorFromPalette(palette, beat8(5, seg.now), thisVal, LINEARBLEND)
+          : BLACK,
+      );
+    }
+  }
+  seg.blur(seg.custom2 >> 5);
+}
+
+// --- Polar Lights (174) -----------------------------------------------------
+function mode2DPolarLights(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  if (seg.call === 0) {
+    seg.fill(BLACK);
+    seg.step = 0;
+  }
+
+  const adjustHeight = map(rows, 8, 32, 28, 12);
+  const adjScale = map(cols, 8, 64, 310, 63);
+  const scale = map(seg.intensity, 0, 255, 30, adjScale);
+  const speed = map(seg.speed, 0, 255, 128, 16);
+
+  for (let x = 0; x < cols; x++) {
+    for (let y = 0; y < rows; y++) {
+      seg.step++;
+      let palindex = qsub8(
+        perlin8(
+          (seg.step % 2) + x * scale,
+          y * 16 + (seg.step % 16),
+          Math.trunc(seg.step / speed),
+        ),
+        Math.trunc(Math.abs(rows / 2 - y) * adjustHeight),
+      );
+      const palbrightness = palindex;
+      if (seg.check1) palindex = 255 - palindex; // flip palette
+      seg.setPixelColorXY(
+        x,
+        y,
+        seg.color_from_palette(palindex, false, false, 255, palbrightness),
+      );
+    }
+  }
+}
+
+// --- Pulser (162) -----------------------------------------------------------
+function mode2DPulser(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  seg.fadeToBlackBy(8 - (seg.intensity >> 5));
+  const a = Math.trunc(seg.now / (18 - Math.trunc(seg.speed / 16)));
+  const x = Math.trunc(a / 14) % cols;
+  const y = map(sin8(a * 5) + sin8(a * 4) + sin8(a * 2), 0, 765, rows - 1, 0);
+  seg.setPixelColorXY(
+    x,
+    y,
+    colorFromPalette(
+      seg.getCurrentPalette(),
+      map(y, 0, rows - 1, 0, 255),
+      255,
+      LINEARBLEND,
+    ),
+  );
+
+  seg.blur(seg.intensity >> 4);
+}
+
+// --- Sindots (181) ----------------------------------------------------------
+function mode2DSindots(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  seg.fadeToBlackBy((seg.custom1 >> 3) + (seg.check1 ? 24 : 0));
+
+  const t1 = Math.trunc(seg.now / (257 - seg.speed)) & 0xff;
+  const t2 = (Math.trunc(sin8(t1) / 4) * 2) & 0xff;
+  const palette = seg.getCurrentPalette();
+  for (let i = 0; i < 13; i++) {
+    const x = Math.trunc(
+      (sin8(t1 + Math.trunc((i * seg.intensity) / 8)) * (cols - 1)) / 255,
+    );
+    const y = Math.trunc(
+      (sin8(t2 + Math.trunc((i * seg.intensity) / 8)) * (rows - 1)) / 255,
+    );
+    seg.setPixelColorXY(
+      x,
+      y,
+      colorFromPalette(palette, Math.trunc((i * 255) / 13), 255, LINEARBLEND),
+    );
+  }
+  seg.blur(seg.custom2 >> (3 + (seg.check1 ? 1 : 0)), seg.check1);
+}
+
+// --- Squared Swirl (150) ----------------------------------------------------
+function mode2DSquaredSwirl(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+  const kBorderWidth = 2;
+
+  seg.fadeToBlackBy(1 + Math.trunc(seg.intensity / 5));
+  seg.blur(seg.custom3 >> 1);
+
+  // two out-of-sync sine waves
+  const i = beatsin8_t(19, seg.now, kBorderWidth, cols - kBorderWidth);
+  const j = beatsin8_t(22, seg.now, kBorderWidth, cols - kBorderWidth);
+  const k = beatsin8_t(17, seg.now, kBorderWidth, cols - kBorderWidth);
+  const m = beatsin8_t(18, seg.now, kBorderWidth, rows - kBorderWidth);
+  const n = beatsin8_t(15, seg.now, kBorderWidth, rows - kBorderWidth);
+  const p = beatsin8_t(20, seg.now, kBorderWidth, rows - kBorderWidth);
+
+  const palette = seg.getCurrentPalette();
+  seg.addPixelColorXY(
+    i,
+    m,
+    colorFromPalette(palette, Math.trunc(seg.now / 29), 255, LINEARBLEND),
+  );
+  seg.addPixelColorXY(
+    j,
+    n,
+    colorFromPalette(palette, Math.trunc(seg.now / 41), 255, LINEARBLEND),
+  );
+  seg.addPixelColorXY(
+    k,
+    p,
+    colorFromPalette(palette, Math.trunc(seg.now / 73), 255, LINEARBLEND),
+  );
+}
+
+// --- Sun Radiation (166) ----------------------------------------------------
+/** FastLED HeatColor: black-body radiation ramp, packed RGB. */
+function heatColor(temperature: number): number {
+  const t192 = scale8_video(temperature & 0xff, 191);
+  let heatramp = t192 & 0x3f; // 0..63
+  heatramp <<= 2; // 0..252
+  if (t192 & 0x80) return rgbw32(255, 255, heatramp, 0); // hottest
+  if (t192 & 0x40) return rgbw32(255, heatramp, 0, 0); // middle
+  return rgbw32(heatramp, 0, 0, 0); // coolest
+}
+
+function mode2DSunRadiation(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const bump = seg.allocateData((cols + 2) * (rows + 2));
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const t = Math.trunc(seg.now / 4);
+  let index = 0;
+  const someVal = Math.trunc(seg.speed / 4);
+  for (let j = 0; j < rows + 2; j++) {
+    for (let i = 0; i < cols + 2; i++) {
+      // signed byte stored in a Uint8Array, read back via s8 below
+      bump[index++] = (perlin8(i * someVal, j * someVal, t) - 127) >> 2;
+    }
+  }
+  const sb = (v: number): number => (v << 24) >> 24;
+  const abs8 = (v: number): number => Math.abs(sb(v));
+
+  let yindex = cols + 3;
+  let vly = -(Math.trunc(rows / 2) + 1);
+  for (let y = 0; y < rows; y++) {
+    ++vly;
+    let vlx = -(Math.trunc(cols / 2) + 1);
+    for (let x = 0; x < cols; x++) {
+      ++vlx;
+      const nx = sb(bump[x + yindex + 1]) - sb(bump[x + yindex - 1]);
+      const ny =
+        sb(bump[x + yindex + (cols + 2)]) - sb(bump[x + yindex - (cols + 2)]);
+      const difx = abs8(vlx * 7 - nx);
+      const dify = abs8(vly * 7 - ny);
+      const temp = difx * difx + dify * dify;
+      let col = 255 - Math.trunc(temp / 8); // 8 is the size of the effect
+      if (col < 0) col = 0;
+      seg.setPixelColorXY(
+        x,
+        y,
+        heatColor(Math.trunc(col / (3.0 - seg.intensity / 128))),
+      );
+    }
+    yindex += cols + 2;
+  }
+}
+
+// --- Tartan (173) -----------------------------------------------------------
+function mode2DTartan(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const offsetX = beatsin16_t(3, seg.now, -360, 360);
+  const offsetY = beatsin16_t(2, seg.now, -360, 360);
+  const sharpness = Math.trunc(seg.custom3 / 8); // 0-3
+  const palette = seg.getCurrentPalette();
+  const hueScale = beatsin16_t(10, seg.now, 1, 10);
+
+  for (let x = 0; x < cols; x++) {
+    for (let y = 0; y < rows; y++) {
+      let hue = x * hueScale + offsetY;
+      let bri = sin8(Math.trunc((x * seg.speed) / 2) + offsetX);
+      // intensity = bri^(sharpness+1) >> 8*sharpness (size_t math, > 32 bits)
+      let intensity = Math.floor(bri ** (sharpness + 1) / 2 ** (8 * sharpness));
+      seg.setPixelColorXY(
+        x,
+        y,
+        colorFromPalette(palette, hue, intensity, LINEARBLEND),
+      );
+      hue = y * 3 + offsetX;
+      bri = sin8(Math.trunc((y * seg.intensity) / 2) + offsetY);
+      intensity = Math.floor(bri ** (sharpness + 1) / 2 ** (8 * sharpness));
+      seg.addPixelColorXY(
+        x,
+        y,
+        colorFromPalette(palette, hue, intensity, LINEARBLEND),
+      );
+    }
+  }
+}
+
+// --- Spaceships (118) -------------------------------------------------------
+function mode2DSpaceships(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const tb = seg.now >> 12; // every ~4s
+  if (tb > seg.step) {
+    let dir = seg.aux0 + 1;
+    dir += seg.rng.random8(3) - 1;
+    if (dir > 7) seg.aux0 = 0;
+    else if (dir < 0) seg.aux0 = 7;
+    else seg.aux0 = dir;
+    seg.step = tb + seg.rng.random8(4);
+  }
+
+  seg.fadeToBlackBy(map(seg.speed, 0, 255, 248, 16));
+  seg.move(seg.aux0, 1);
+
+  const palette = seg.getCurrentPalette();
+  for (let i = 0; i < 8; i++) {
+    const x = beatsin8_t(12 + i, seg.now, 2, cols - 3);
+    const y = beatsin8_t(15 + i, seg.now, 2, rows - 3);
+    const color = colorFromPalette(
+      palette,
+      beatsin8_t(12 + i, seg.now, 0, 255),
+      255,
+    );
+    seg.addPixelColorXY(x, y, color);
+    if (cols > 24 || rows > 24) {
+      seg.addPixelColorXY(x + 1, y, color);
+      seg.addPixelColorXY(x - 1, y, color);
+      seg.addPixelColorXY(x, y + 1, color);
+      seg.addPixelColorXY(x, y - 1, color);
+    }
+  }
+  seg.blur(seg.intensity >> 3, seg.check1);
+}
+
+// --- Crazy Bees (119) -------------------------------------------------------
+const MAX_BEES = 5;
+interface Bee {
+  posX: number;
+  posY: number;
+  aimX: number;
+  aimY: number;
+  hue: number;
+  deltaX: number;
+  deltaY: number;
+  signX: number;
+  signY: number;
+  error: number;
+}
+const BEES_STATE = new WeakMap<Segment, Bee[]>();
+
+function beeAimed(bee: Bee, seg: Segment2D, w: number, h: number): void {
+  bee.aimX = seg.rng.random8(0, w);
+  bee.aimY = seg.rng.random8(0, h);
+  bee.hue = seg.rng.random8();
+  bee.deltaX = Math.abs(bee.aimX - bee.posX);
+  bee.deltaY = Math.abs(bee.aimY - bee.posY);
+  bee.signX = bee.posX < bee.aimX ? 1 : -1;
+  bee.signY = bee.posY < bee.aimY ? 1 : -1;
+  bee.error = bee.deltaX - bee.deltaY;
+}
+
+function mode2DCrazyBees(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const n = Math.min(MAX_BEES, Math.trunc((rows * cols) / 256) + 1);
+
+  let bees = BEES_STATE.get(seg);
+  if (!bees || seg.call === 0) {
+    bees = Array.from({ length: MAX_BEES }, () => ({
+      posX: 0,
+      posY: 0,
+      aimX: 0,
+      aimY: 0,
+      hue: 0,
+      deltaX: 0,
+      deltaY: 0,
+      signX: 1,
+      signY: 1,
+      error: 0,
+    }));
+    for (let i = 0; i < n; i++) {
+      bees[i].posX = seg.rng.random8(0, cols);
+      bees[i].posY = seg.rng.random8(0, rows);
+      beeAimed(bees[i], seg, cols, rows);
+    }
+    BEES_STATE.set(seg, bees);
+  }
+
+  if (seg.now > seg.step) {
+    seg.step = seg.now + Math.trunc((FRAMETIME * 16) / ((seg.speed >> 4) + 1));
+    seg.fadeToBlackBy(
+      32 + Math.trunc(((seg.check1 ? 1 : 0) * seg.intensity) / 25),
+    );
+    seg.blur(
+      Math.trunc(seg.intensity / (2 + (seg.check1 ? 9 : 0))),
+      seg.check1,
+    );
+    for (let i = 0; i < n; i++) {
+      const bee = bees[i];
+      const flowerColor = seg.color_from_palette(bee.hue, false, true, 255);
+      seg.addPixelColorXY(bee.aimX + 1, bee.aimY, flowerColor);
+      seg.addPixelColorXY(bee.aimX, bee.aimY + 1, flowerColor);
+      seg.addPixelColorXY(bee.aimX - 1, bee.aimY, flowerColor);
+      seg.addPixelColorXY(bee.aimX, bee.aimY - 1, flowerColor);
+      if (bee.posX !== bee.aimX || bee.posY !== bee.aimY) {
+        seg.setPixelColorXY(
+          bee.posX,
+          bee.posY,
+          hsv2rgb_rainbow(bee.hue << 8, 60, 255),
+        );
+        const error2 = bee.error * 2;
+        if (error2 > -bee.deltaY) {
+          bee.error -= bee.deltaY;
+          bee.posX = (bee.posX + bee.signX) & 0xff;
+        }
+        if (error2 < bee.deltaX) {
+          bee.error += bee.deltaX;
+          bee.posY = (bee.posY + bee.signY) & 0xff;
+        }
+      } else {
+        beeAimed(bee, seg, cols, rows);
+      }
+    }
+  }
+}
+
+// --- Ghost Rider (120) ------------------------------------------------------
+const LIGHTERS_AM = 64;
+interface GhostRiderState {
+  gPosX: number;
+  gPosY: number;
+  gAngle: number;
+  angleSpeed: number;
+  Vspeed: number;
+  lightersPosX: Uint16Array;
+  lightersPosY: Uint16Array;
+  angle: Uint16Array;
+  time: Uint16Array;
+  reg: Uint8Array;
+}
+const GHOST_RIDER_STATE = new WeakMap<Segment, GhostRiderState>();
+
+function mode2DGhostRider(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const maxLighters = Math.min(cols + rows, LIGHTERS_AM);
+  const radians = (deg: number): number => (deg * Math.PI) / 180;
+
+  let st = GHOST_RIDER_STATE.get(seg);
+  if (!st || seg.aux0 !== cols || seg.aux1 !== rows) {
+    seg.aux0 = cols;
+    seg.aux1 = rows;
+    st = {
+      gPosX: (cols >> 1) * 10,
+      gPosY: (rows >> 1) * 10,
+      gAngle: seg.rng.random16(),
+      angleSpeed: seg.rng.random8(0, 20) - 10,
+      Vspeed: 5,
+      lightersPosX: new Uint16Array(LIGHTERS_AM),
+      lightersPosY: new Uint16Array(LIGHTERS_AM),
+      angle: new Uint16Array(LIGHTERS_AM),
+      time: new Uint16Array(LIGHTERS_AM),
+      reg: new Uint8Array(LIGHTERS_AM),
+    };
+    for (let i = 0; i < maxLighters; i++) {
+      st.lightersPosX[i] = st.gPosX;
+      st.lightersPosY[i] = st.gPosY + i;
+      st.time[i] = i * 2;
+    }
+    GHOST_RIDER_STATE.set(seg, st);
+  }
+
+  if (seg.now > seg.step) {
+    seg.step = seg.now + Math.trunc(1024 / (cols + rows));
+
+    seg.fadeToBlackBy((seg.speed >> 2) + 64);
+
+    seg.wu_pixel(
+      Math.trunc((st.gPosX * 256) / 10),
+      Math.trunc((st.gPosY * 256) / 10),
+      WHITE,
+    );
+
+    st.gPosX =
+      (st.gPosX + Math.trunc(st.Vspeed * sin_approx(radians(st.gAngle)))) | 0;
+    st.gPosY =
+      (st.gPosY + Math.trunc(st.Vspeed * cos_approx(radians(st.gAngle)))) | 0;
+    st.gAngle = (st.gAngle + st.angleSpeed) & 0xffff;
+    if (st.gPosX < 0) st.gPosX = (cols - 1) * 10;
+    if (st.gPosX > (cols - 1) * 10) st.gPosX = 0;
+    if (st.gPosY < 0) st.gPosY = (rows - 1) * 10;
+    if (st.gPosY > (rows - 1) * 10) st.gPosY = 0;
+
+    const palette = seg.getCurrentPalette();
+    for (let i = 0; i < maxLighters; i++) {
+      st.time[i] += seg.rng.random8(5, 20);
+      if (
+        st.time[i] >= 255 ||
+        st.lightersPosX[i] <= 0 ||
+        st.lightersPosX[i] >= (cols - 1) * 10 ||
+        st.lightersPosY[i] <= 0 ||
+        st.lightersPosY[i] >= (rows - 1) * 10
+      ) {
+        st.reg[i] = 1;
+      }
+      if (st.reg[i]) {
+        st.lightersPosY[i] = st.gPosY;
+        st.lightersPosX[i] = st.gPosX;
+        st.angle[i] = (st.gAngle + (seg.rng.random8(20) - 10)) & 0xffff;
+        st.time[i] = 0;
+        st.reg[i] = 0;
+      } else {
+        // uint16 wrap on purpose: leaving the frame re-registers the lighter
+        st.lightersPosX[i] += Math.trunc(-7 * sin_approx(radians(st.angle[i])));
+        st.lightersPosY[i] += Math.trunc(-7 * cos_approx(radians(st.angle[i])));
+      }
+      seg.wu_pixel(
+        Math.trunc((st.lightersPosX[i] * 256) / 10),
+        Math.trunc((st.lightersPosY[i] * 256) / 10),
+        colorFromPalette(palette, 256 - st.time[i]),
+      );
+    }
+    seg.blur(seg.intensity >> 3);
+  }
+}
+
+// --- Blobs (121) ------------------------------------------------------------
+const MAX_BLOBS = 8;
+interface BlobState {
+  x: Float64Array;
+  y: Float64Array;
+  sX: Float64Array;
+  sY: Float64Array;
+  r: Float64Array;
+  grow: Uint8Array;
+  color: Uint8Array;
+}
+const BLOBS_STATE = new WeakMap<Segment, BlobState>();
+
+function mode2DFloatingBlobs(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const amount = (seg.intensity >> 5) + 1;
+
+  let blob = BLOBS_STATE.get(seg);
+  if (!blob || seg.aux0 !== cols || seg.aux1 !== rows) {
+    seg.aux0 = cols;
+    seg.aux1 = rows;
+    blob = {
+      x: new Float64Array(MAX_BLOBS),
+      y: new Float64Array(MAX_BLOBS),
+      sX: new Float64Array(MAX_BLOBS),
+      sY: new Float64Array(MAX_BLOBS),
+      r: new Float64Array(MAX_BLOBS),
+      grow: new Uint8Array(MAX_BLOBS),
+      color: new Uint8Array(MAX_BLOBS),
+    };
+    for (let i = 0; i < MAX_BLOBS; i++) {
+      blob.r[i] = seg.rng.random8(1, cols > 8 ? Math.trunc(cols / 4) : 2);
+      blob.sX[i] = seg.rng.random8(3, cols) / (256 - seg.speed);
+      blob.sY[i] = seg.rng.random8(3, rows) / (256 - seg.speed);
+      blob.x[i] = seg.rng.random8(0, cols - 1);
+      blob.y[i] = seg.rng.random8(0, rows - 1);
+      blob.color[i] = seg.rng.random8();
+      blob.grow[i] = blob.r[i] < 1 ? 1 : 0;
+      if (blob.sX[i] === 0) blob.sX[i] = 1;
+      if (blob.sY[i] === 0) blob.sY[i] = 1;
+    }
+    BLOBS_STATE.set(seg, blob);
+  }
+
+  seg.fadeToBlackBy((seg.custom2 >> 3) + 1);
+
+  for (let i = 0; i < amount; i++) {
+    if (seg.step < seg.now) blob.color[i] += 4; // slowly change color
+    const maxSpeed = Math.max(Math.abs(blob.sX[i]), Math.abs(blob.sY[i]));
+    if (blob.grow[i]) {
+      blob.r[i] += maxSpeed * 0.05;
+      if (blob.r[i] >= Math.min(cols / 4, 2)) blob.grow[i] = 0;
+    } else {
+      blob.r[i] -= maxSpeed * 0.05;
+      if (blob.r[i] < 1) blob.grow[i] = 1;
+    }
+    const c = seg.color_from_palette(blob.color[i], false, false, 0);
+    if (blob.r[i] > 1)
+      seg.fillCircle(
+        Math.round(blob.x[i]),
+        Math.round(blob.y[i]),
+        Math.round(blob.r[i]),
+        c,
+      );
+    else seg.setPixelColorXY(Math.round(blob.x[i]), Math.round(blob.y[i]), c);
+    // move x
+    if (blob.x[i] + blob.r[i] >= cols - 1)
+      blob.x[i] += blob.sX[i] * ((cols - 1 - blob.x[i]) / blob.r[i] + 0.005);
+    else if (blob.x[i] - blob.r[i] <= 0)
+      blob.x[i] += blob.sX[i] * (blob.x[i] / blob.r[i] + 0.005);
+    else blob.x[i] += blob.sX[i];
+    // move y
+    if (blob.y[i] + blob.r[i] >= rows - 1)
+      blob.y[i] += blob.sY[i] * ((rows - 1 - blob.y[i]) / blob.r[i] + 0.005);
+    else if (blob.y[i] - blob.r[i] <= 0)
+      blob.y[i] += blob.sY[i] * (blob.y[i] / blob.r[i] + 0.005);
+    else blob.y[i] += blob.sY[i];
+    // bounce x
+    if (blob.x[i] < 0.01) {
+      blob.sX[i] = seg.rng.random8(3, cols) / (256 - seg.speed);
+      blob.x[i] = 0.01;
+    } else if (blob.x[i] > cols - 1.01) {
+      blob.sX[i] = seg.rng.random8(3, cols) / (256 - seg.speed);
+      blob.sX[i] = -blob.sX[i];
+      blob.x[i] = cols - 1.01;
+    }
+    // bounce y
+    if (blob.y[i] < 0.01) {
+      blob.sY[i] = seg.rng.random8(3, rows) / (256 - seg.speed);
+      blob.y[i] = 0.01;
+    } else if (blob.y[i] > rows - 1.01) {
+      blob.sY[i] = seg.rng.random8(3, rows) / (256 - seg.speed);
+      blob.sY[i] = -blob.sY[i];
+      blob.y[i] = rows - 1.01;
+    }
+  }
+  seg.blur(seg.custom1 >> 2);
+
+  if (seg.step < seg.now) seg.step = seg.now + 2000; // change colors every 2s
+}
+
+// --- Drift Rose (123) -------------------------------------------------------
+function mode2DDriftRose(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const CX = (cols - (cols % 2)) / 2 - 0.5;
+  const CY = (rows - (rows % 2)) / 2 - 0.5;
+  const L = Math.min(cols, rows) / 2;
+
+  seg.fadeToBlackBy(32 + (seg.speed >> 3));
+  const palette = seg.getCurrentPalette();
+  for (let i = 1; i < 37; i++) {
+    const angle = (i * 10 * Math.PI) / 180;
+    const x =
+      Math.trunc(
+        (CX + sin_approx(angle) * (beatsin8_t(i, seg.now, 0, L * 2) - L)) * 255,
+      ) >>> 0;
+    const y =
+      Math.trunc(
+        (CY + cos_approx(angle) * (beatsin8_t(i, seg.now, 0, L * 2) - L)) * 255,
+      ) >>> 0;
+    if (seg.palette === 0)
+      seg.wu_pixel(x, y, hsv2rgb_rainbow((i * 10) << 8, 255, 255));
+    else seg.wu_pixel(x, y, colorFromPalette(palette, i * 10));
+  }
+  seg.blur(seg.intensity >> 4, seg.check1);
+}
+
+// --- Rotozoomer (114) -------------------------------------------------------
+const ROTOZOOM_ANGLE = new WeakMap<Segment, { a: number }>();
+
+function mode2DPlasmaRotozoom(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const plasma = seg.allocateData(seg.length);
+  let rot = ROTOZOOM_ANGLE.get(seg);
+  if (!rot || seg.call === 0) {
+    rot = { a: 0 };
+    ROTOZOOM_ANGLE.set(seg, rot);
+  }
+
+  const ms = Math.trunc(seg.now / 15);
+
+  // plasma
+  for (let j = 0; j < rows; j++) {
+    const index = j * cols;
+    for (let i = 0; i < cols; i++) {
+      if (seg.check1)
+        plasma[index + i] = (((i * 4) ^ (j * 4)) + Math.trunc(ms / 6)) & 0xff;
+      else plasma[index + i] = perlin8(i * 40, j * 40, ms);
+    }
+  }
+
+  // rotozoom
+  const f = (sin_approx(rot.a / 2) + (128 - seg.intensity) / 128 + 1.1) / 1.5;
+  const kosinus = cos_approx(rot.a) * f;
+  const sinus = sin_approx(rot.a) * f;
+  const abs8f = (v: number): number => Math.abs((Math.trunc(v) << 24) >> 24);
+  for (let i = 0; i < cols; i++) {
+    const u1 = i * kosinus;
+    const v1 = i * sinus;
+    for (let j = 0; j < rows; j++) {
+      const u = abs8f(u1 - j * sinus) % cols;
+      const v = abs8f(v1 + j * kosinus) % rows;
+      seg.setPixelColorXY(
+        i,
+        j,
+        seg.color_from_palette(plasma[v * cols + u], false, false, 255),
+      );
+    }
+  }
+  rot.a -= 0.03 + (seg.speed - 128) * 0.0002; // rotation speed
+  if (rot.a < -6283.18530718) rot.a += 6283.18530718; // 1000*2*PI
+}
+
+// --- Distortion Waves (124) -------------------------------------------------
+/** WLED rgb2hsv (colors.cpp), 8-bit hue only (CHSV32 h>>8). */
+function rgb2hsvHue8(r: number, g: number, b: number): number {
+  const maxval = Math.max(r, g, b);
+  if (maxval === 0) return 0;
+  const minval = Math.min(r, g, b);
+  const delta = maxval - minval;
+  if (delta === 0) return 0;
+  let h16: number;
+  if (maxval === r) h16 = Math.trunc((10923 * (g - b)) / delta) & 0xffff;
+  else if (maxval === g)
+    h16 = (21845 + Math.trunc((10923 * (b - r)) / delta)) & 0xffff;
+  else h16 = (43690 + Math.trunc((10923 * (r - g)) / delta)) & 0xffff;
+  return h16 >> 8;
+}
+
+function mode2DDistortionWaves(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const speed = Math.trunc(seg.speed / 32);
+  let scale = Math.trunc(seg.intensity / 32);
+  if (seg.check2) scale += Math.trunc(192 / (cols + rows)); // zoom out some more
+
+  const a = Math.trunc(seg.now / 32);
+  const a2 = Math.trunc(a / 2);
+  const a3 = Math.trunc(a / 3);
+  const colsScaled = cols * scale;
+  const rowsScaled = rows * scale;
+
+  const cx = beatsin16_t((10 - speed) & 0xffff, seg.now, 0, colsScaled);
+  const cy = beatsin16_t((12 - speed) & 0xffff, seg.now, 0, rowsScaled);
+  const cx1 = beatsin16_t((13 - speed) & 0xffff, seg.now, 0, colsScaled);
+  const cy1 = beatsin16_t((15 - speed) & 0xffff, seg.now, 0, rowsScaled);
+  const cx2 = beatsin16_t((17 - speed) & 0xffff, seg.now, 0, colsScaled);
+  const cy2 = beatsin16_t((14 - speed) & 0xffff, seg.now, 0, rowsScaled);
+
+  const palette = seg.getCurrentPalette();
+  let xoffs = 0;
+  for (let x = 0; x < cols; x++) {
+    xoffs += scale;
+    let yoffs = 0;
+    for (let y = 0; y < rows; y++) {
+      yoffs += scale;
+
+      let rdistort: number;
+      let gdistort: number;
+      let bdistort: number;
+      if (seg.check3) {
+        // alternate mode from the original code
+        rdistort = cos8(((x + y) * 8 + a2) & 255) >> 1;
+        gdistort = cos8(((x + y) * 8 + a3 + 32) & 255) >> 1;
+        bdistort = cos8(((x + y) * 8 + a + 64) & 255) >> 1;
+      } else {
+        rdistort =
+          cos8(
+            (cos8(((x << 3) + a) & 255) + cos8(((y << 3) - a2) & 255) + a3) &
+              255,
+          ) >> 1;
+        gdistort =
+          cos8(
+            (cos8(((x << 3) - a2) & 255) +
+              cos8(((y << 3) + a3) & 255) +
+              a +
+              32) &
+              255,
+          ) >> 1;
+        bdistort =
+          cos8(
+            (cos8(((x << 3) + a3) & 255) +
+              cos8(((y << 3) - a) & 255) +
+              a2 +
+              64) &
+              255,
+          ) >> 1;
+      }
+
+      let valueR =
+        (rdistort +
+          ((a -
+            (((xoffs - cx) * (xoffs - cx) + (yoffs - cy) * (yoffs - cy)) >>
+              7)) <<
+            1)) &
+        0xff;
+      let valueG =
+        (gdistort +
+          ((a2 -
+            (((xoffs - cx1) * (xoffs - cx1) + (yoffs - cy1) * (yoffs - cy1)) >>
+              7)) <<
+            1)) &
+        0xff;
+      let valueB =
+        (bdistort +
+          ((a3 -
+            (((xoffs - cx2) * (xoffs - cx2) + (yoffs - cy2) * (yoffs - cy2)) >>
+              7)) <<
+            1)) &
+        0xff;
+
+      valueR = cos8(valueR);
+      valueG = cos8(valueG);
+      valueB = cos8(valueB);
+
+      if (seg.palette === 0) {
+        seg.setPixelColorXY(x, y, rgbw32(valueR, valueG, valueB, 0));
+      } else {
+        const brightness = Math.trunc((valueR + valueG + valueB) / 3);
+        if (seg.check1) {
+          seg.setPixelColorXY(
+            x,
+            y,
+            colorFromPalette(palette, brightness, 255, LINEARBLEND_NOWRAP),
+          );
+        } else {
+          const hue = rgb2hsvHue8(valueR >> 2, valueG >> 2, valueB >> 2);
+          seg.setPixelColorXY(x, y, colorFromPalette(palette, hue, brightness));
+        }
+      }
+    }
+  }
+
+  // palette mode and not filling: smear-blur covers palette wrap artifacts
+  if (!seg.check1 && seg.palette) seg.blur(200, true);
+}
+
+// --- Soap (125) -------------------------------------------------------------
+interface SoapState {
+  noise3d: Uint8Array;
+  pixels: Uint32Array;
+  noisecoord: [number, number, number];
+}
+const SOAP_STATE = new WeakMap<Segment, SoapState>();
+
+function soapPixels(
+  seg: Segment2D,
+  isRow: boolean,
+  noise3d: Uint8Array,
+  pixels: Uint32Array,
+): void {
+  const cols = seg.width;
+  const rows = seg.height;
+  const XY = (x: number, y: number): number => x + y * cols;
+  const tRC = isRow ? rows : cols;
+  const tCR = isRow ? cols : rows;
+  const amplitude = Math.max(1, (tCR - 8) >> 3) * (1 + (seg.custom1 >> 5));
+  const palette = seg.getCurrentPalette();
+
+  const scaleChannel = (c: number, s: number): number => (c * (1 + s)) >> 8;
+  const ledsbuff = new Uint32Array(tCR);
+
+  for (let i = 0; i < tRC; i++) {
+    const amount = (noise3d[isRow ? i * cols : i] - 128) * amplitude;
+    const delta = Math.abs(amount) >> 8;
+    const fraction = Math.abs(amount) & 255;
+    for (let j = 0; j < tCR; j++) {
+      let zD: number;
+      let zF: number;
+      if (amount < 0) {
+        zD = j - delta;
+        zF = zD - 1;
+      } else {
+        zD = j + delta;
+        zF = zD + 1;
+      }
+      let yA = Math.abs(zD) % tCR;
+      let yB = Math.abs(zF) % tCR;
+      let xA = i;
+      let xB = i;
+      if (isRow) {
+        [xA, yA] = [yA, xA];
+        [xB, yB] = [yB, xB];
+      }
+      const indxA = XY(xA, yA);
+      const indxB = XY(xB, yB);
+      const pixelA =
+        zD >= 0 && zD < tCR
+          ? pixels[indxA]
+          : colorFromPalette(palette, ((~noise3d[indxA] & 0xff) * 3) & 0xff);
+      const pixelB =
+        zF >= 0 && zF < tCR
+          ? pixels[indxB]
+          : colorFromPalette(palette, ((~noise3d[indxB] & 0xff) * 3) & 0xff);
+      const eA = ease8InOutCubic(255 - fraction);
+      const eB = ease8InOutCubic(fraction);
+      const r = qadd8(scaleChannel(R(pixelA), eA), scaleChannel(R(pixelB), eB));
+      const g = qadd8(scaleChannel(G(pixelA), eA), scaleChannel(G(pixelB), eB));
+      const b = qadd8(scaleChannel(B(pixelA), eA), scaleChannel(B(pixelB), eB));
+      ledsbuff[j] = ((r << 16) | (g << 8) | b) >>> 0;
+    }
+    for (let j = 0; j < tCR; j++) {
+      const c = ledsbuff[j];
+      const px = isRow ? j : i;
+      const py = isRow ? i : j;
+      pixels[XY(px, py)] = c;
+      seg.setPixelColorXY(px, py, c);
+    }
+  }
+}
+
+function mode2DSoap(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+  const XY = (x: number, y: number): number => x + y * cols;
+
+  const segSize = cols * rows;
+  let st = SOAP_STATE.get(seg);
+  const fresh = !st || st.noise3d.length !== segSize;
+  if (fresh) {
+    st = {
+      noise3d: new Uint8Array(segSize),
+      pixels: new Uint32Array(segSize),
+      noisecoord: [
+        seg.rng.random16() * 65536 + seg.rng.random16(),
+        seg.rng.random16() * 65536 + seg.rng.random16(),
+        seg.rng.random16() * 65536 + seg.rng.random16(),
+      ],
+    };
+    SOAP_STATE.set(seg, st);
+  }
+  const { noise3d, pixels, noisecoord } = st!;
+
+  const scale32x = Math.trunc(160000 / cols);
+  const scale32y = Math.trunc(160000 / rows);
+  const mov = Math.trunc((Math.min(cols, rows) * (seg.speed + 2)) / 2);
+  const smoothness = Math.min(250, seg.intensity);
+
+  if (!fresh) {
+    for (let i = 0; i < 3; i++) noisecoord[i] = (noisecoord[i] + mov) >>> 0;
+  }
+
+  for (let i = 0; i < cols; i++) {
+    const ioffset = scale32x * (i - Math.trunc(cols / 2));
+    for (let j = 0; j < rows; j++) {
+      const joffset = scale32y * (j - Math.trunc(rows / 2));
+      const data =
+        inoise16(
+          (noisecoord[0] + ioffset) >>> 0,
+          (noisecoord[1] + joffset) >>> 0,
+          noisecoord[2],
+        ) >> 8;
+      noise3d[XY(i, j)] =
+        scale8(noise3d[XY(i, j)], smoothness) + scale8(data, 255 - smoothness);
+    }
+  }
+
+  // init also if dimensions changed
+  if (fresh || seg.aux0 !== cols || seg.aux1 !== rows) {
+    seg.aux0 = cols;
+    seg.aux1 = rows;
+    const palette = seg.getCurrentPalette();
+    for (let i = 0; i < cols; i++) {
+      for (let j = 0; j < rows; j++) {
+        const c = colorFromPalette(
+          palette,
+          ((~noise3d[XY(i, j)] & 0xff) * 3) & 0xff,
+        );
+        pixels[XY(i, j)] = c;
+        seg.setPixelColorXY(i, j, c);
+      }
+    }
+  }
+
+  soapPixels(seg, true, noise3d, pixels); // rows
+  soapPixels(seg, false, noise3d, pixels); // cols
+}
+
+// --- Octopus (126) ----------------------------------------------------------
+interface OctopusState {
+  angle: Uint8Array;
+  radius: Uint8Array;
+  offsX: number;
+  offsY: number;
+}
+const OCTOPUS_STATE = new WeakMap<Segment, OctopusState>();
+
+function mode2DOctopus(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+  const XY = (x: number, y: number): number => (x % cols) + (y % rows) * cols;
+  const mapp = Math.trunc(180 / Math.max(cols, rows));
+
+  let st = OCTOPUS_STATE.get(seg);
+  if (
+    !st ||
+    seg.call === 0 ||
+    seg.aux0 !== cols ||
+    seg.aux1 !== rows ||
+    seg.custom1 !== st.offsX ||
+    seg.custom2 !== st.offsY
+  ) {
+    seg.step = 0; // t
+    seg.aux0 = cols;
+    seg.aux1 = rows;
+    st = {
+      angle: new Uint8Array(cols * rows),
+      radius: new Uint8Array(cols * rows),
+      offsX: seg.custom1,
+      offsY: seg.custom2,
+    };
+    const cX =
+      Math.trunc(cols / 2) + Math.trunc(((seg.custom1 - 128) * cols) / 255);
+    const cY =
+      Math.trunc(rows / 2) + Math.trunc(((seg.custom2 - 128) * rows) / 255);
+    for (let x = 0; x < cols; x++) {
+      for (let y = 0; y < rows; y++) {
+        const dx = x - cX;
+        const dy = y - cY;
+        st.angle[XY(x, y)] = Math.trunc(40.7436 * Math.atan2(dy, dx)) & 0xff;
+        st.radius[XY(x, y)] =
+          Math.trunc(Math.sqrt(dx * dx + dy * dy) * mapp) & 0xff;
+      }
+    }
+    OCTOPUS_STATE.set(seg, st);
+  }
+
+  seg.step += Math.trunc(seg.speed / 32) + 1; // 1-4 range
+  const palette = seg.getCurrentPalette();
+  for (let x = 0; x < cols; x++) {
+    for (let y = 0; y < rows; y++) {
+      const angle = st.angle[XY(x, y)];
+      const radius = st.radius[XY(x, y)];
+      let intensity = sin8(
+        sin8(Math.trunc((angle * 4 - radius) / 4) + Math.trunc(seg.step / 2)) +
+          radius -
+          seg.step +
+          angle * (Math.trunc(seg.custom3 / 4) + 1),
+      );
+      intensity = map((intensity * intensity) & 0xffff, 0, 65535, 0, 255);
+      seg.setPixelColorXY(
+        x,
+        y,
+        colorFromPalette(palette, Math.trunc(seg.step / 2) - radius, intensity),
+      );
+    }
+  }
+}
+
+// --- Waving Cell (127) ------------------------------------------------------
+function mode2DWavingCell(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const t = (seg.now * (seg.speed + 1)) >>> 3; // uint32 wrap + shift
+  const aX = Math.trunc(seg.custom1 / 16) + 9;
+  const aY = Math.trunc(seg.custom2 / 16) + 1;
+  const aZ = seg.custom3 + 1;
+  const palette = seg.getCurrentPalette();
+  for (let x = 0; x < cols; x++) {
+    for (let y = 0; y < rows; y++) {
+      const wave =
+        sin8(x * aX + (Math.imul(((y << 8) + t) | 0, aY) >>> 8)) + cos8(y * aZ);
+      const colorIndex = (wave + (t >>> (8 - (seg.check2 ? 3 : 0)))) & 0xff;
+      seg.setPixelColorXY(x, y, colorFromPalette(palette, colorIndex));
+    }
+  }
+  seg.blur(seg.intensity);
+}
+
 // --- Hiphotic (180) ---------------------------------------------------------
 function mode2DHiphotic(seg: Segment2D): void {
   if (!seg.is2D()) return fallbackStatic(seg);
@@ -6542,7 +8192,36 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
  * over a Segment2D matrix; the sim wrapper picks the registry by id.
  */
 export const EFFECT_SIMS_2D: Record<number, (seg: Segment2D) => void> = {
+  114: mode2DPlasmaRotozoom, // "Rotozoomer"
+  118: mode2DSpaceships,
+  119: mode2DCrazyBees,
+  120: mode2DGhostRider,
+  121: mode2DFloatingBlobs,
+  123: mode2DDriftRose,
+  124: mode2DDistortionWaves,
+  125: mode2DSoap,
+  126: mode2DOctopus,
+  127: mode2DWavingCell,
+  146: mode2DNoise,
+  150: mode2DSquaredSwirl,
+  166: mode2DSunRadiation,
+  173: mode2DTartan,
+  181: mode2DSindots,
+  149: mode2DFirenoise,
+  153: mode2DMatrix,
+  154: mode2DMetaballs,
+  162: mode2DPulser,
+  168: mode2DJulia,
+  174: mode2DPolarLights,
+  176: mode2DLissajous,
+  178: mode2DPlasmaball,
+  152: mode2DDna,
+  164: mode2DDrift,
+  167: mode2DColoredBursts,
   172: mode2DGameOfLife,
+  177: mode2DFrizzles,
   180: mode2DHiphotic,
+  182: mode2DDnaSpiral,
+  183: mode2DBlackHole,
   188: modeParticleFire2D, // "PS Fire"
 };
