@@ -46,6 +46,7 @@ import {
   scale8_video,
   sin_approx,
   cos8_t as cos8,
+  cos16_t as cos16,
   ease8InOutCubic,
   sin16_t as sin16,
   sin8_t as sin8,
@@ -70,7 +71,9 @@ import {
 import {
   initParticleSystem2D,
   getParticleSystem2D,
+  newPSsettings2D,
   PS_P_RADIUS,
+  PS_P_HALFRADIUS as PS_P_HALFRADIUS_2D,
   type ParticleSystem2D,
 } from './particles-2d.js';
 
@@ -7934,6 +7937,7 @@ function mode2DGameOfLife(seg: Segment2D): void {
 // int8 coercion for particle-velocity writes outside the engine (the engine's
 // own s8 is private; effects that poke particles directly need it too).
 const s8_2d = (v: number): number => (v << 24) >> 24;
+const s16 = (v: number): number => (v << 16) >> 16;
 
 // frame-skip timestamp (firmware keeps it in 4 additionalbytes past the PS)
 const FIRE_LASTCALL = new WeakMap<Segment, { v: number }>();
@@ -8050,6 +8054,906 @@ function modeParticleFire2D(seg: Segment2D): void {
   }
 
   ps.updateFire(seg.intensity);
+}
+
+// --- PS Vortex (190) --------------------------------------------------------
+function modeParticleVortex(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 8);
+    if (!ps) return fallbackStatic(seg);
+    ps.setMotionBlur(130);
+    for (let i = 0; i < Math.min(ps.numSources, 8); i++) {
+      ps.sources[i].source.x = (ps.maxX + 1) >> 1; // center
+      ps.sources[i].source.y = (ps.maxY + 1) >> 1;
+      ps.sources[i].maxLife = 900;
+      ps.sources[i].minLife = 800;
+    }
+    ps.setKillOutOfBounds(true);
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  const spraycount = Math.min(ps.numSources, 1 + (seg.custom1 >> 5));
+  ps.setSmearBlur(seg.check1 ? 90 : 0);
+
+  // spray colors, evenly offset
+  for (let i = 0; i < spraycount; i++) {
+    ps.sources[i].source.hue = (Math.trunc(0xff / spraycount) * i) & 0xff;
+  }
+
+  // rotation direction and speed (step doubles as the signed current speed)
+  let direction = seg.check2;
+  let currentspeed = seg.step | 0;
+
+  if (seg.custom2 > 0) {
+    // automatic direction change
+    let changeinterval = 1040 - (seg.custom2 << 2);
+    direction = (seg.aux1 & 0x01) !== 0;
+    if (seg.check3)
+      changeinterval = 20 + changeinterval + seg.rng.random16(changeinterval);
+    if (seg.call % changeinterval === 0) {
+      seg.aux1 |= 0x02;
+      if (direction) seg.aux1 &= ~0x01;
+      else seg.aux1 |= 0x01;
+    }
+  }
+
+  const targetspeed = (direction ? 1 : -1) * (seg.speed << 3);
+  const speeddiff = targetspeed - currentspeed;
+  let speedincrement = Math.trunc(speeddiff / 50);
+  if (speedincrement === 0) {
+    if (speeddiff < 0) speedincrement = -1;
+    else if (speeddiff > 0) speedincrement = 1;
+  }
+  currentspeed += speedincrement;
+  seg.aux0 = (seg.aux0 + currentspeed) & 0xffff;
+  seg.step = currentspeed;
+
+  const angleoffset = Math.trunc(0xffff / spraycount);
+  const skip = Math.trunc(PS_P_HALFRADIUS_2D / (seg.intensity + 1)) + 1;
+  if (seg.call % skip === 0) {
+    let j = seg.rng.random16(spraycount);
+    for (let i = 0; i < spraycount; i++) {
+      ps.sources[j].var = seg.custom3 >> 1;
+      ps.angleEmit(
+        ps.sources[j],
+        (seg.aux0 + angleoffset * j) & 0xffff,
+        (seg.intensity >> 2) + 1,
+      );
+      j = (j + 1) % spraycount;
+    }
+  }
+  ps.update();
+}
+
+// --- PS Fireworks (189) -----------------------------------------------------
+function modeParticleFireworks2D(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 8);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.setWallHardness(120); // ground bounce is fixed
+    const numRockets = Math.min(ps.numSources, 8);
+    for (let j = 0; j < numRockets; j++) {
+      ps.sources[j].source.ttl = 500 * j; // stagger launches
+      ps.sources[j].source.vy = -1; // negative = standby, will relaunch
+    }
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  const numRockets = map(seg.speed, 0, 255, 4, Math.min(ps.numSources, 8));
+
+  ps.setWrapX(seg.check1);
+  ps.setBounceY(seg.check2);
+  ps.setGravity(map(seg.custom3, 0, 31, seg.check2 ? 1 : 0, 10));
+  ps.setMotionBlur(map(seg.custom2, 0, 255, 0, 245));
+
+  // update the rockets
+  for (let j = 0; j < numRockets; j++) {
+    const src = ps.sources[j];
+    ps.applyGravity(src.source);
+    ps.particleMoveUpdate(src.source, src.sourceFlags);
+    if (src.source.ttl === 0) {
+      if (src.source.vy > 0) {
+        src.source.vy = 0; // died moving up: stop -> explodes below
+      } else if (src.source.vy < 0) {
+        // exploded and standby over: relaunch
+        src.source.y = PS_P_RADIUS;
+        src.source.x = (ps.maxX >> 2) + seg.rng.random16(ps.maxX >> 1);
+        src.source.vy = seg.custom3 + seg.rng.random16(seg.custom1 >> 3) + 5;
+        src.source.vx = seg.rng.random16(7) - 3;
+        src.source.sat = 30; // exhaust is off-white
+        src.source.ttl = seg.rng.random16(seg.custom1) + (seg.custom1 >> 1);
+        src.maxLife = 40; // exhaust particle life
+        src.minLife = 10;
+        src.vx = 0;
+        src.vy = -5;
+        src.var = 4;
+      }
+    }
+  }
+
+  // emit per rocket state: up = exhaust, stopped = explode, falling = standby
+  let circularexplosion = false;
+  let speed = 0;
+  let currentspeed: number;
+  let percircle = 0;
+  let angle = 0;
+  let baseangle = 0;
+  let angleincrement = 0;
+  let hueincrement = 0;
+  let frequency = 0;
+  let counter = 0;
+
+  for (let j = 0; j < numRockets; j++) {
+    const src = ps.sources[j];
+    let emitparticles: number;
+    if (src.source.vy > 0) {
+      emitparticles = 1; // exhaust
+    } else if (src.source.vy < 0) {
+      emitparticles = 0; // standby
+    } else {
+      // explode!
+      src.source.hue = seg.rng.random16() & 0xff;
+      src.source.sat = seg.rng.random16(55) + 200;
+      src.maxLife = 200;
+      src.minLife = 100;
+      src.source.ttl =
+        seg.rng.random16(2000 - (seg.speed << 2)) + 550 - (seg.speed << 1);
+      src.var = (seg.intensity >> 4) + 5;
+      src.source.vy = -1; // no more particles until relaunch
+      emitparticles =
+        seg.rng.random16(seg.intensity >> 2) + (seg.intensity >> 2) + 5;
+
+      if (seg.rng.random16() & 1) {
+        // 50% chance for circular explosion
+        circularexplosion = true;
+        speed = 2 + seg.rng.random16(3) + (seg.intensity >> 6);
+        angleincrement = 2730 + seg.rng.random16(5461);
+        angle = seg.rng.random16();
+        baseangle = angle;
+        percircle = Math.trunc(0xffff / angleincrement) + 1;
+        hueincrement = seg.rng.random16() & 127;
+        const circles = 1 + seg.rng.random16(3) + (seg.intensity >> 6);
+        frequency = seg.rng.random16() & 127;
+        emitparticles = percircle * circles;
+        src.var = angle & 1;
+      }
+    }
+    let i = 0;
+    for (; i < emitparticles; i++) {
+      if (circularexplosion) {
+        const sineMod =
+          0xefff + sin16((((angle * frequency) >> 4) + baseangle) & 0xffff);
+        currentspeed = (Math.trunc(speed / 2) + ((sineMod * speed) >> 16)) >> 1;
+        ps.angleEmit(src, angle & 0xffff, currentspeed);
+        counter++;
+        if (counter > percircle) {
+          counter = 0;
+          speed += 3 + (seg.intensity >> 6); // second wave
+          src.source.hue = (src.source.hue + hueincrement) & 0xff;
+          src.source.sat = 100 + seg.rng.random16(156);
+        }
+        angle = (angle + angleincrement) & 0xffff;
+      } else {
+        ps.sprayEmit(src);
+        if (j % 3 === 0) src.source.hue = seg.rng.random16() & 0xff;
+      }
+    }
+    if (i === 0) src.source.y = 1000; // falling: keep away from the ground
+    circularexplosion = false;
+  }
+  if (seg.check3) {
+    // fast: move particles twice
+    for (let i = 0; i < ps.usedParticles; i++) {
+      ps.particleMoveUpdate(ps.particles[i], ps.particleFlags[i], null, null);
+    }
+  }
+  ps.update();
+}
+
+// --- PS Volcano (187) -------------------------------------------------------
+function modeParticleVolcano(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const volcanosettings = newPSsettings2D();
+  volcanosettings.bounceX = true;
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 1);
+    if (!ps) return fallbackStatic(seg);
+    ps.setBounceY(true);
+    ps.setGravity(); // default gforce
+    ps.setKillOutOfBounds(true);
+    ps.setMotionBlur(230);
+    const numSprays = Math.min(ps.numSources, 1);
+    for (let i = 0; i < numSprays; i++) {
+      ps.sources[i].source.hue = seg.rng.random16() & 0xff;
+      ps.sources[i].source.x = Math.trunc(ps.maxX / (numSprays + 1)) * (i + 1);
+      ps.sources[i].maxLife = 300;
+      ps.sources[i].minLife = 250;
+      ps.sources[i].sourceFlags.collide = true;
+      ps.sources[i].sourceFlags.perpetual = true;
+    }
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  const numSprays = Math.min(ps.numSources, 1);
+
+  // every nth frame, cycle color and emit particles
+  if (seg.call % (11 - Math.trunc(seg.intensity / 25)) === 0) {
+    for (let i = 0; i < numSprays; i++) {
+      const src = ps.sources[i];
+      src.source.y = PS_P_RADIUS + 5; // just above the bounce edge
+      src.source.vy = 0;
+      src.source.hue = (src.source.hue + 1) & 0xff;
+      src.source.vx =
+        src.source.vx > 0 ? seg.custom1 >> 2 : -(seg.custom1 >> 2);
+      src.vy = seg.speed >> 2; // emitting speed (upwards)
+      src.vx = 0;
+      src.var = seg.custom3 >> 1; // nozzle size
+      ps.sprayEmit(src);
+      ps.setWallHardness(255); // full hardness for source bounce
+      ps.particleMoveUpdate(src.source, src.sourceFlags, volcanosettings);
+    }
+  }
+
+  ps.updateSystem();
+  ps.setColorByAge(seg.check1);
+  ps.setBounceX(seg.check2);
+  ps.setWallHardness(seg.custom2);
+
+  if (seg.check3) ps.enableParticleCollisions(true, seg.custom2);
+  else ps.enableParticleCollisions(false);
+
+  ps.update();
+}
+
+// --- PS Ballpit (192) -------------------------------------------------------
+function modeParticlePit(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 0, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.setGravity();
+    ps.setUsedParticles(170); // 75% of available particles
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setWrapX(seg.check1);
+  ps.setBounceX(seg.check2);
+  ps.setBounceY(seg.check3);
+  ps.setWallHardness(Math.min(seg.custom2, 150));
+  if (seg.custom2 > 0) ps.enableParticleCollisions(true, seg.custom2);
+  else ps.enableParticleCollisions(false);
+
+  if (seg.call % (128 - (seg.intensity >> 1)) === 0 && seg.intensity > 0) {
+    for (let i = 0; i < ps.usedParticles; i++) {
+      const p = ps.particles[i];
+      if (p.ttl === 0) {
+        // emit at a random position above the top of the matrix
+        p.ttl = 1500 - (seg.speed << 2) + seg.rng.random16(500);
+        p.x = seg.rng.random16(ps.maxX);
+        p.y = ps.maxY << 1;
+        p.vx = s8_2d(seg.rng.random16(seg.speed >> 1) - (seg.speed >> 2));
+        p.vy = s8_2d(map(seg.speed, 0, 255, -5, -100));
+        p.hue = seg.rng.random16() & 0xff;
+        ps.particleFlags[i].collide = true;
+        p.sat = ((seg.custom3 << 3) + 7) & 0xff;
+        if (seg.custom1 === 255) {
+          ps.perParticleSize = true;
+          ps.advPartProps![i].size = seg.rng.random16(seg.custom1) & 0xff;
+        } else {
+          ps.setParticleSize(seg.custom1);
+          ps.advPartProps![i].size = seg.custom1;
+        }
+        break; // one particle per round
+      }
+    }
+  }
+
+  let frictioncoefficient = 1 + (seg.check1 ? 1 : 0);
+  if (seg.speed < 50) frictioncoefficient = 50 - seg.speed;
+  if (seg.call % 6 === 0) ps.applyFriction(frictioncoefficient);
+
+  ps.update();
+}
+
+// --- PS Waterfall (196) -----------------------------------------------------
+function modeParticleWaterfall(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 12);
+    if (!ps) return fallbackStatic(seg);
+    ps.setGravity();
+    ps.setKillOutOfBounds(true);
+    ps.setMotionBlur(190);
+    ps.setSmearBlur(30);
+    for (let i = 0; i < ps.numSources; i++) {
+      ps.sources[i].source.hue = (i * 90) & 0xff;
+      ps.sources[i].sourceFlags.collide = true;
+      ps.sources[i].maxLife = 400;
+      ps.sources[i].minLife = 150;
+    }
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setWrapX(seg.check1); // cylinder
+  ps.setBounceX(seg.check2); // walls
+  ps.setBounceY(seg.check3); // ground
+  ps.setWallHardness(seg.custom2);
+  const numSprays = Math.min(
+    ps.numSources,
+    Math.max(Math.trunc(ps.maxXpixel / 6), 2),
+  );
+  if (seg.custom2 > 0) {
+    ps.enableParticleCollisions(true, seg.custom2);
+  } else {
+    ps.enableParticleCollisions(false);
+    ps.setWallHardness(120); // fixed ground bounce without collisions
+  }
+
+  for (let i = 0; i < numSprays; i++) {
+    ps.sources[i].source.hue =
+      (ps.sources[i].source.hue + 1 + seg.rng.random16(seg.custom1 >> 1)) &
+      0xff;
+  }
+
+  if (seg.call % (12 - (seg.intensity >> 5)) === 0 && seg.intensity > 0) {
+    for (let i = 0; i < numSprays; i++) {
+      const src = ps.sources[i];
+      src.vy = s8_2d(-seg.speed >> 3); // emitting speed, down
+      src.source.x =
+        map(seg.custom3, 0, 31, 0, (ps.maxXpixel - numSprays) * PS_P_RADIUS) +
+        i * PS_P_RADIUS * 2;
+      src.source.y = ps.maxY + PS_P_RADIUS * ((i << 2) + 4); // above the top
+      src.var = seg.custom1 >> 3;
+      ps.sprayEmit(src);
+    }
+  }
+
+  if (seg.call % 20 === 0) ps.applyFriction(1);
+
+  ps.update();
+}
+
+// --- PS Box (193) -----------------------------------------------------------
+function modeParticleBox(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 1, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.setBounceX(true);
+    ps.setBounceY(true);
+    seg.aux0 = seg.rng.random16(); // position in perlin noise
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setWallHardness(Math.min(seg.custom2, 200));
+  ps.enableParticleCollisions(true, Math.max(2, seg.custom2));
+  const maxParticleSize = Math.min((seg.width * seg.height) >> 2, 255);
+  const currentParticleSize = map(seg.custom3, 0, 31, 0, maxParticleSize);
+  ps.setUsedParticles(
+    Math.trunc(
+      map(seg.intensity, 0, 255, 2, 153) / (1 + (currentParticleSize >> 4)),
+    ),
+  );
+  if (seg.custom3 < 31) ps.setParticleSize(currentParticleSize);
+  else ps.perParticleSize = true;
+
+  // add in new particles if amount has changed
+  for (let i = 0; i < ps.usedParticles; i++) {
+    const p = ps.particles[i];
+    if (p.ttl < 260) {
+      p.ttl = 260;
+      p.x = seg.rng.random16(ps.maxX);
+      p.y = seg.rng.random16(ps.maxY);
+      p.hue = seg.rng.random8();
+      ps.particleFlags[i].perpetual = true;
+      ps.particleFlags[i].collide = true;
+      ps.advPartProps![i].size = seg.rng.random8(maxParticleSize);
+      break; // one spawn per frame
+    }
+  }
+
+  if (seg.call % (((255 - seg.speed) >> 6) + 1) === 0 && seg.speed > 0) {
+    let xgravity: number;
+    let ygravity: number;
+    const increment = (seg.speed >> 6) + 1;
+
+    if (seg.check2) {
+      // washing machine
+      const speed = Math.trunc(
+        tristateSquare8((seg.now >> 7) & 0xff, 90, 15) /
+          ((400 - seg.speed) >> 3),
+      );
+      seg.aux0 = (seg.aux0 + speed) & 0xffff;
+      if (speed === 0) seg.aux0 = 190; // down (= 270°)
+    } else {
+      seg.aux0 = (seg.aux0 - increment) & 0xffff;
+    }
+
+    if (seg.check1) {
+      // random, from perlin noise
+      xgravity = inoise8(seg.aux0) - 127;
+      ygravity = inoise8((seg.aux0 + 10000) & 0xffff) - 127;
+      xgravity = Math.trunc((xgravity * seg.custom1) / 128);
+      ygravity = Math.trunc((ygravity * seg.custom1) / 128);
+    } else {
+      // go in a circle
+      xgravity = Math.trunc(
+        (seg.custom1 * cos16((seg.aux0 << 8) & 0xffff)) / 0xffff,
+      );
+      ygravity = Math.trunc(
+        (seg.custom1 * sin16((seg.aux0 << 8) & 0xffff)) / 0xffff,
+      );
+    }
+    if (seg.check3) {
+      // sloshing: y force always downwards
+      if (ygravity > 0) ygravity = -ygravity;
+    }
+
+    ps.applyForce(xgravity, ygravity);
+  }
+
+  if ((seg.call & 0x0f) === 0) ps.applyFriction(1);
+
+  ps.update();
+}
+
+// --- PS Fuzzy Noise (191) ---------------------------------------------------
+function modeParticlePerlin(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 1, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.setMotionBlur(230);
+    ps.setBounceY(true);
+    seg.aux0 = seg.rng.random16();
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setWrapX(seg.check1);
+  ps.setBounceX(!seg.check1);
+  ps.setWallHardness(seg.custom1);
+  ps.enableParticleCollisions(seg.check3, seg.custom1);
+  ps.setUsedParticles(map(seg.intensity, 0, 255, 25, 128));
+  ps.setSmearBlur(seg.check2 ? 15 : 0);
+
+  // 'gravity' from a 2D perlin noise map
+  seg.aux0 = (seg.aux0 + 1 + (seg.speed >> 5)) & 0xffff;
+  const scale = 16 - ((31 - seg.custom3) >> 1);
+  for (let i = 0; i < ps.usedParticles; i++) {
+    const p = ps.particles[i];
+    if (p.ttl === 0) {
+      // reseed dead particles so they don't clump
+      p.ttl = seg.rng.random16(500) + 200;
+      p.x = seg.rng.random16(ps.maxX);
+      p.y = seg.rng.random16(ps.maxY);
+      ps.particleFlags[i].collide = true;
+    }
+    const xnoise = Math.trunc(p.x / scale) & 0xffff;
+    const ynoise = Math.trunc(p.y / scale) & 0xffff;
+    const baseheight = perlin8(xnoise, ynoise, seg.aux0);
+    p.hue = baseheight & 0xff;
+    if (seg.call % 8 === 0) {
+      // int8 wrap on the summed slopes is firmware behavior
+      const xslope = s8_2d(
+        baseheight + perlin8((xnoise - 10) & 0xffff, ynoise, seg.aux0),
+      );
+      const yslope = s8_2d(
+        baseheight + perlin8(xnoise, (ynoise - 10) & 0xffff, seg.aux0),
+      );
+      ps.applyForceIdx(i, xslope, yslope);
+    }
+  }
+
+  if (seg.call % (16 - (seg.custom2 >> 4)) === 0) ps.applyFriction(2);
+
+  ps.update();
+}
+
+// --- PS Impact (195) --------------------------------------------------------
+function modeParticleImpact(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const meteorsettings = newPSsettings2D();
+  meteorsettings.bounceY = true;
+  meteorsettings.useGravity = true;
+
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 8);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.setGravity();
+    ps.setBounceY(true);
+    ps.setWallRoughness(220);
+    const numMeteors = Math.min(ps.numSources, 8);
+    for (let i = 0; i < numMeteors; i++) {
+      ps.sources[i].source.ttl = seg.rng.random16(10 * i);
+      ps.sources[i].source.vy = 10; // positive = standby
+    }
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setWrapX(seg.check1);
+  ps.setBounceX(seg.check2);
+  ps.setMotionBlur(seg.custom3 << 3);
+  const hardness = map(seg.custom2, 0, 255, 126, 255); // MINSURFACEHARDNESS-2
+  ps.setWallHardness(hardness);
+  ps.enableParticleCollisions(seg.check3, hardness);
+  const numMeteors = Math.min(ps.numSources, 8);
+
+  for (let i = 0; i < numMeteors; i++) {
+    const src = ps.sources[i];
+    let emitparticles: number;
+    if (src.source.vy < 0)
+      emitparticles = 1; // falling: sparks
+    else if (src.source.vy > 0)
+      emitparticles = 0; // standby
+    else {
+      // explode!
+      src.source.vy = 10; // timeout, then relaunch
+      emitparticles = map(
+        seg.intensity,
+        0,
+        255,
+        10,
+        seg.rng.random16(ps.usedParticles >> 2),
+      );
+    }
+    for (let e = emitparticles; e > 0; e--) ps.sprayEmit(src);
+  }
+
+  // update the meteors
+  for (let i = 0; i < numMeteors; i++) {
+    const src = ps.sources[i];
+    if (src.source.ttl) {
+      src.source.ttl--;
+      if (src.source.vy < 0) {
+        ps.applyGravity(src.source);
+        ps.particleMoveUpdate(src.source, src.sourceFlags, meteorsettings);
+        if (src.source.y < PS_P_RADIUS << 1) {
+          // reached the bottom: explode next call
+          src.source.vy = 0;
+          src.source.vx = 0;
+          src.sourceFlags.collide = true;
+          src.maxLife = 1250;
+          src.minLife = 250;
+          src.source.ttl = seg.rng.random16(768 - (seg.speed << 1)) + 40;
+          src.vy = seg.custom1 >> 2;
+          src.var = seg.custom1 >> 2;
+        }
+      }
+    } else if (src.source.vy > 0) {
+      // relaunch meteor
+      src.source.y = ps.maxY + (PS_P_RADIUS << 2);
+      src.source.x = seg.rng.random16(ps.maxX);
+      src.source.vy = s8_2d(-seg.rng.random16(30) - 30);
+      src.source.vx = s8_2d(seg.rng.random16(50) - 25);
+      src.source.hue = seg.rng.random16() & 0xff;
+      src.source.ttl = 500;
+      src.sourceFlags.collide = false;
+      src.maxLife = 300;
+      src.minLife = 100;
+      src.vy = -9;
+      src.var = 3;
+    }
+  }
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (ps.particles[i].ttl > 5) ps.particles[i].ttl -= 5;
+  }
+
+  ps.update();
+}
+
+// --- PS Attractor (194) -----------------------------------------------------
+// the attractor particle lives past the PS in firmware SEGENV.data; a WeakMap here
+const ATTRACTOR_STATE = new WeakMap<
+  Segment,
+  {
+    x: number;
+    y: number;
+    ttl: number;
+    vx: number;
+    vy: number;
+    hue: number;
+    sat: number;
+  }
+>();
+
+function modeParticleAttractor(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const sourcesettings = newPSsettings2D();
+  sourcesettings.bounceX = true;
+  sourcesettings.bounceY = true;
+  const attractorFlags = {
+    outofbounds: false,
+    collide: false,
+    perpetual: false,
+    custom1: false,
+    custom2: false,
+    custom3: false,
+  };
+
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 1, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.sources[0].source.hue = seg.rng.random16() & 0xff;
+    ps.sources[0].source.vx = -7; // wall collision gives a random direction
+    ps.sources[0].sourceFlags.collide = true;
+    ps.sources[0].sourceFlags.perpetual = true;
+    ps.sources[0].maxLife = 350;
+    ps.sources[0].minLife = 50;
+    ps.sources[0].var = 4;
+    ps.setWallHardness(255);
+    ps.setWallRoughness(200);
+    ATTRACTOR_STATE.set(seg, {
+      x: 0,
+      y: 0,
+      ttl: 0,
+      vx: 0,
+      vy: 0,
+      hue: 0,
+      sat: 255,
+    });
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  const attractor = ATTRACTOR_STATE.get(seg);
+  if (!ps || !attractor) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setColorByAge(seg.check1);
+  ps.setParticleSize(seg.custom1 >> 1);
+  ps.setUsedParticles(map(seg.intensity, 0, 255, 25, 190));
+
+  attractor.ttl = 100; // never dies
+  if (seg.check2) {
+    if (seg.call % 3 === 0)
+      ps.particleMoveUpdate(attractor, attractorFlags, sourcesettings);
+  } else {
+    attractor.x = ps.maxX >> 1; // center
+    attractor.y = ps.maxY >> 1;
+  }
+  if (seg.call === 0) {
+    attractor.vx = ps.sources[0].source.vy; // reversed x/y of the spray speed
+    attractor.vy = ps.sources[0].source.vx;
+  }
+
+  if (seg.custom2 > 0)
+    ps.enableParticleCollisions(true, map(seg.custom2, 1, 255, 120, 255));
+  else ps.enableParticleCollisions(false);
+
+  if (seg.call % 5 === 0)
+    ps.sources[0].source.hue = (ps.sources[0].source.hue + 1) & 0xff;
+
+  seg.aux0 = (seg.aux0 + 256) & 0xffff; // emitting angle
+  if (seg.call % 2 === 0) ps.angleEmit(ps.sources[0], seg.aux0, 12);
+  else ps.angleEmit(ps.sources[0], (seg.aux0 + 0x7fff) & 0xffff, 12);
+
+  const strength = seg.speed;
+  for (let i = 0; i < ps.usedParticles; i++) {
+    ps.pointAttractor(i, attractor, strength, seg.check3);
+  }
+
+  if (seg.call % (33 - seg.custom3) === 0) ps.applyFriction(2);
+  ps.particleMoveUpdate(
+    ps.sources[0].source,
+    ps.sources[0].sourceFlags,
+    sourcesettings,
+  );
+  ps.update();
+}
+
+// --- PS Ghost Rider (200) ---------------------------------------------------
+const MAXANGLESTEP = 2200; // 32767 means 180°
+
+function modeParticleGhostRider(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const ghostsettings = newPSsettings2D();
+  ghostsettings.wrapX = true;
+  ghostsettings.wrapY = true;
+
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 1);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.sources[0].maxLife = 260;
+    ps.sources[0].minLife = 250;
+    ps.sources[0].source.x = seg.rng.random16(ps.maxX);
+    ps.sources[0].source.y = seg.rng.random16(ps.maxY);
+    seg.step = seg.rng.random16(MAXANGLESTEP) - (MAXANGLESTEP >> 1); // angle increment
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  if (seg.intensity > 0) {
+    // spiraling
+    if (seg.aux1) {
+      seg.step += seg.intensity >> 3;
+      if (seg.step > MAXANGLESTEP) seg.aux1 = 0;
+    } else {
+      seg.step -= seg.intensity >> 3;
+      if (seg.step < -MAXANGLESTEP) seg.aux1 = 1;
+    }
+  }
+  ps.updateSystem();
+  ps.setMotionBlur(seg.custom1);
+  ps.sources[0].var = seg.custom3 >> 1;
+
+  // color by age (the PS built-in always starts at hue 255; not wanted here)
+  if (seg.check1) {
+    for (let i = 0; i < ps.usedParticles; i++) {
+      ps.particles[i].hue =
+        (ps.sources[0].source.hue + (ps.particles[i].ttl << 2)) & 0xff;
+    }
+  }
+
+  ghostsettings.bounceX = seg.check2;
+  ghostsettings.bounceY = seg.check2;
+
+  seg.aux0 = (seg.aux0 + seg.step) & 0xffff;
+  const emitangle = (seg.aux0 + 32767) & 0xffff; // +180°
+  const speed = map(seg.speed, 0, 255, 12, 64);
+  ps.sources[0].source.vx = s8_2d(
+    Math.trunc((cos16(seg.aux0) * speed) / 32767),
+  );
+  ps.sources[0].source.vy = s8_2d(
+    Math.trunc((sin16(seg.aux0) * speed) / 32767),
+  );
+  ps.sources[0].source.ttl = 500; // replenished each frame: never dies
+  ps.particleMoveUpdate(
+    ps.sources[0].source,
+    ps.sources[0].sourceFlags,
+    ghostsettings,
+  );
+  // set head (steal one of the particles)
+  const head = ps.particles[ps.usedParticles - 1];
+  head.x = ps.sources[0].source.x;
+  head.y = ps.sources[0].source.y;
+  head.ttl = 255;
+  head.sat = 0; // white
+  // emit two particles
+  ps.angleEmit(ps.sources[0], emitangle, speed);
+  ps.angleEmit(ps.sources[0], emitangle, speed);
+  if (seg.call % (11 - Math.trunc(seg.custom2 / 25)) === 0) {
+    ps.sources[0].source.hue = (ps.sources[0].source.hue + 1) & 0xff;
+  }
+  if (seg.custom2 > 190) {
+    // fast color change
+    ps.sources[0].source.hue =
+      (ps.sources[0].source.hue + ((seg.custom2 - 190) >> 2)) & 0xff;
+  }
+
+  ps.update();
+}
+
+// --- PS Galaxy (217) --------------------------------------------------------
+function modeParticleGalaxy(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const sourcesettings = newPSsettings2D();
+  sourcesettings.bounceX = true;
+  sourcesettings.bounceY = true;
+
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 1, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.sources[0].source.vx = -4; // wall collision gives a random direction
+    ps.sources[0].source.x = ps.maxX >> 1; // start in the center
+    ps.sources[0].source.y = ps.maxY >> 1;
+    ps.sources[0].sourceFlags.perpetual = true;
+    ps.sources[0].maxLife = 4000;
+    ps.sources[0].minLife = 800;
+    ps.sources[0].source.hue = seg.rng.random16() & 0xff;
+    ps.setWallHardness(255);
+    ps.setWallRoughness(200);
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setParticleSize(seg.custom1);
+  ps.setMotionBlur(seg.check3 ? 250 : 0);
+
+  if (seg.call % ((33 - seg.custom3) >> 1) === 0)
+    ps.sources[0].source.hue = (ps.sources[0].source.hue + 2) & 0xff;
+
+  if (seg.rng.random8() < 10 + (seg.intensity >> 1))
+    ps.sprayEmit(ps.sources[0]); // 5%-55% chance per frame
+
+  if ((seg.call & 0x3) === 0)
+    ps.particleMoveUpdate(
+      ps.sources[0].source,
+      ps.sources[0].sourceFlags,
+      sourcesettings,
+    );
+
+  // spiral motion (or almost straight in starfield mode)
+  const centerx = ps.maxX >> 1;
+  const centery = ps.maxY >> 1;
+  if (seg.check2) {
+    // starfield mode
+    ps.setKillOutOfBounds(true);
+    ps.sources[0].var = 7;
+    ps.sources[0].source.x = centerx;
+    ps.sources[0].source.y = centery;
+  } else {
+    ps.setKillOutOfBounds(false);
+    ps.sources[0].var = 1;
+  }
+  for (let i = 0; i < ps.usedParticles; i++) {
+    const p = ps.particles[i];
+    if (p.ttl === 0) continue;
+    const dx = centerx - p.x;
+    const dy = centery - p.y;
+    let distance = Math.trunc(Math.sqrt(dx * dx + dy * dy));
+    if (distance < 20) distance = 20;
+    if (seg.check2) {
+      // starfield: speed increases towards the edge
+      const speedfactor = 1 + (1 + (seg.speed >> 1)) * distance;
+      p.x = s16(p.x + Math.trunc((-speedfactor * dx) / 400000) - (dy >> 6));
+      p.y = s16(p.y + Math.trunc((-speedfactor * dy) / 400000) + (dx >> 6));
+    } else {
+      // spiral in: speed increases towards the center
+      const speedfactor = 2 + Math.trunc(((50 + seg.speed) << 6) / distance);
+      const tempVx = -speedfactor * dy; // orthogonal to the center vector
+      const tempVy = speedfactor * dx;
+      const vxc = Math.trunc((dx << 9) / (distance - 19));
+      const vyc = Math.trunc((dy << 9) / (distance - 19));
+      p.x = s16(p.x + Math.trunc((tempVx + vxc) / 1024));
+      p.y = s16(p.y + Math.trunc((tempVy + vyc) / 1024));
+
+      if (distance < 128) {
+        // close to center: age fast, turn white
+        if (p.ttl > 3) p.ttl -= 4;
+        p.sat = (distance << 1) & 0xff;
+      }
+    }
+    if (seg.custom3 === 31)
+      p.hue = (p.ttl >> 2) & 0xff; // color by (long) age
+    else if (seg.custom3 === 0)
+      p.hue = map(distance, 20, (ps.maxX + ps.maxY) >> 2, 0, 180) & 0xff;
+  }
+
+  ps.update();
 }
 
 export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
@@ -8223,5 +9127,16 @@ export const EFFECT_SIMS_2D: Record<number, (seg: Segment2D) => void> = {
   180: mode2DHiphotic,
   182: mode2DDnaSpiral,
   183: mode2DBlackHole,
+  187: modeParticleVolcano, // "PS Volcano"
   188: modeParticleFire2D, // "PS Fire"
+  189: modeParticleFireworks2D, // "PS Fireworks"
+  190: modeParticleVortex, // "PS Vortex"
+  191: modeParticlePerlin, // "PS Fuzzy Noise"
+  192: modeParticlePit, // "PS Ballpit"
+  193: modeParticleBox, // "PS Box"
+  194: modeParticleAttractor, // "PS Attractor"
+  195: modeParticleImpact, // "PS Impact"
+  196: modeParticleWaterfall, // "PS Waterfall"
+  200: modeParticleGhostRider, // "PS Ghost Rider"
+  217: modeParticleGalaxy, // "PS Galaxy"
 };
