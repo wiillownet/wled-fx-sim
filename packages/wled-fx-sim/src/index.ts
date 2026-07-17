@@ -1,8 +1,9 @@
 /**
- * Public surface of the headless WLED 1D effect simulator (decisions.md,
- * 2026-07-03 "Effect previews become real 1D WLED simulations"). Pure TS, no
- * DOM/Svelte/canvas -- it produces an RGB pixel buffer per frame; a canvas
- * renderer + Svelte wiring live elsewhere.
+ * Public surface of the headless WLED effect simulator (decisions.md,
+ * 2026-07-03 "Effect previews become real 1D WLED simulations"; 2026-07-17
+ * extended to 2D matrix effects). Pure TS, no DOM/Svelte/canvas -- it produces
+ * an RGB pixel buffer per frame; a canvas renderer + Svelte wiring live
+ * elsewhere.
  *
  * Frame cadence: WLED effects advance on a fixed ~42fps step (FRAMETIME). A
  * sim catches its internal clock up to the requested `nowMs` in FRAMETIME steps,
@@ -10,18 +11,32 @@
  * accumulators) evolve exactly as on-device regardless of how often the renderer
  * calls frame(). Given a fresh reset, frame(t) is deterministic in (fxId, params,
  * t) because all randomness is seeded. Calls should advance monotonically (rAF).
+ *
+ * 1D effects render over `length` pixels; 2D effects render over a
+ * `width`×`height` matrix (row-major buffer, length = width*height). Matrix
+ * dimensions sync to the connected device's 2D setup; 16×16 is the canonical
+ * offline default (decisions.md, 2026-07-17).
  */
 import { Segment, readBuffer } from './segment.js';
-import { EFFECT_SIMS, FRAMETIME } from './effects.js';
+import { Segment2D } from './segment-2d.js';
+import { EFFECT_SIMS, EFFECT_SIMS_2D, FRAMETIME } from './effects.js';
 import type { RGB } from './lib8.js';
 import { pack } from './lib8.js';
 
 export type { RGB } from './lib8.js';
 export { FRAMETIME } from './effects.js';
 
+/** Offline default matrix dimensions for 2D previews. */
+export const DEFAULT_MATRIX_WIDTH = 16;
+export const DEFAULT_MATRIX_HEIGHT = 16;
+
 export interface EffectSimParams {
-  /** Strip length in pixels (device LED count when connected; a default offline). */
+  /** Strip length in pixels (device LED count when connected; a default offline). 1D only. */
   length: number;
+  /** Matrix width for 2D effects (device width when connected; 16 offline). */
+  width?: number;
+  /** Matrix height for 2D effects (device height when connected; 16 offline). */
+  height?: number;
   /** Speed slider `sx` (0-255). */
   sx?: number;
   /** Intensity slider `ix` (0-255). */
@@ -30,7 +45,7 @@ export interface EffectSimParams {
   pal?: number;
   /** P/S/T colors as [r,g,b] triples; only the ones the effect uses matter. */
   colors?: RGB[];
-  /** Effect checkboxes o1/o2/o3 (few 1D effects use these). */
+  /** Effect checkboxes o1/o2/o3. */
   check1?: boolean;
   check2?: boolean;
   check3?: boolean;
@@ -45,9 +60,13 @@ export interface EffectSimParams {
 export interface EffectSim {
   /** The fx id this sim runs. */
   readonly fxId: number;
-  /** Strip length (pixels per frame). */
+  /** Total pixels per frame (strip length, or width*height for 2D). */
   readonly length: number;
-  /** Render the strip at show time `nowMs`; returns `length` RGB triples. */
+  /** Frame width in pixels (equals `length` for a 1D effect). */
+  readonly width: number;
+  /** Frame height in pixels (1 for a 1D effect). */
+  readonly height: number;
+  /** Render at show time `nowMs`; returns `length` RGB triples (row-major for 2D). */
   frame(nowMs: number): RGB[];
   /** Reset scratch state + PRNG to frame 0 (e.g. when params change). */
   reset(): void;
@@ -59,19 +78,24 @@ const DEFAULT_COLORS: RGB[] = [
   [0, 0, 0], // tertiary
 ];
 
-/** True if a real 1D simulation exists for this fx id (else: fall back to CSS). */
+/** True if a real simulation (1D or 2D) exists for this fx id (else: fall back to CSS). */
 export function isPorted(fxId: number): boolean {
-  return fxId in EFFECT_SIMS;
+  return fxId in EFFECT_SIMS || fxId in EFFECT_SIMS_2D;
 }
 
-/** The ported effect ids, ascending. */
+/** True if `fxId` is simulated on a 2D matrix (its frames are width×height). */
+export function is2DEffect(fxId: number): boolean {
+  return fxId in EFFECT_SIMS_2D;
+}
+
+/** The ported effect ids (1D + 2D), ascending. */
 export function portedFxIds(): number[] {
-  return Object.keys(EFFECT_SIMS)
+  return [...Object.keys(EFFECT_SIMS), ...Object.keys(EFFECT_SIMS_2D)]
     .map(Number)
     .sort((a, b) => a - b);
 }
 
-/** The effect body for `fxId`, or undefined if unported. */
+/** The 1D effect body for `fxId`, or undefined if unported (2D bodies are internal). */
 export function getEffectSim(
   fxId: number,
 ): ((seg: Segment) => void) | undefined {
@@ -87,14 +111,22 @@ export function createEffectSim(
   fxId: number,
   params: EffectSimParams,
 ): EffectSim {
-  const run = EFFECT_SIMS[fxId];
-  if (!run) {
+  const run2d = EFFECT_SIMS_2D[fxId];
+  const run1d = EFFECT_SIMS[fxId];
+  if (!run1d && !run2d) {
     throw new Error(
-      `No 1D simulation ported for fx id ${fxId}; gate on isPorted() and fall back to the CSS preview.`,
+      `No simulation ported for fx id ${fxId}; gate on isPorted() and fall back to the CSS preview.`,
     );
   }
 
-  const length = Math.max(1, params.length | 0);
+  const is2d = !!run2d;
+  const width = is2d
+    ? Math.max(1, (params.width ?? DEFAULT_MATRIX_WIDTH) | 0)
+    : Math.max(1, params.length | 0);
+  const height = is2d
+    ? Math.max(1, (params.height ?? DEFAULT_MATRIX_HEIGHT) | 0)
+    : 1;
+  const length = width * height;
   const seed = params.seed ?? 0x1234;
 
   const applyParams = (seg: Segment): void => {
@@ -115,13 +147,21 @@ export function createEffectSim(
     seg.custom3 = clamp8(params.custom3 ?? 0);
   };
 
-  let seg = new Segment(length, seed);
+  const build = (): { seg: Segment; run: (seg: Segment) => void } => {
+    if (is2d) {
+      const seg2d = new Segment2D(width, height, seed);
+      return { seg: seg2d, run: (s) => run2d(s as Segment2D) };
+    }
+    return { seg: new Segment(length, seed), run: run1d };
+  };
+
+  let { seg, run } = build();
   applyParams(seg);
   // internal fixed-step clock; -FRAMETIME so the first frame(0) runs step 0.
   let steppedTo = -FRAMETIME;
 
   const reset = (): void => {
-    seg = new Segment(length, seed);
+    ({ seg, run } = build());
     applyParams(seg);
     steppedTo = -FRAMETIME;
   };
@@ -148,6 +188,8 @@ export function createEffectSim(
   return {
     fxId,
     length,
+    width,
+    height,
     frame,
     reset,
   };

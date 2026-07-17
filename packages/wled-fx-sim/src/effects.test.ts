@@ -3,6 +3,7 @@ import {
   createEffectSim,
   FRAMETIME,
   getEffectSim,
+  is2DEffect,
   isPorted,
   portedFxIds,
   type RGB,
@@ -45,8 +46,22 @@ describe('registry surface', () => {
 
   it('createEffectSim throws for an unported id (never faked)', () => {
     expect(() => createEffectSim(999, { length: LEN })).toThrow(
-      /no 1d simulation/i,
+      /no simulation/i,
     );
+  });
+
+  it('reports 2D ids and sizes their sims to the matrix, 16x16 by default', () => {
+    expect(is2DEffect(180)).toBe(true); // Hiphotic
+    expect(is2DEffect(0)).toBe(false);
+    const sim = createEffectSim(180, { length: LEN });
+    expect(sim.width).toBe(16);
+    expect(sim.height).toBe(16);
+    expect(sim.length).toBe(256);
+    const sized = createEffectSim(180, { length: LEN, width: 8, height: 4 });
+    expect(sized.length).toBe(32);
+    const oneD = createEffectSim(0, { length: LEN });
+    expect(oneD.width).toBe(LEN);
+    expect(oneD.height).toBe(1);
   });
 });
 
@@ -55,11 +70,13 @@ describe('registry surface', () => {
 describe.each(portedFxIds())('effect %i contract', (fxId) => {
   const base = { length: LEN, colors: [RED, GREEN, BLUE] as RGB[] };
 
-  it('produces a valid RGB buffer of strip length', () => {
+  it('produces a valid RGB buffer of frame length', () => {
+    // 2D ids ignore `length` and render the default 16x16 matrix; sim.length
+    // reports the true frame size either way.
     const sim = createEffectSim(fxId, base);
-    expect(isValidBuffer(sim.frame(0), LEN)).toBe(true);
-    expect(isValidBuffer(sim.frame(500), LEN)).toBe(true);
-    expect(isValidBuffer(sim.frame(3000), LEN)).toBe(true);
+    expect(isValidBuffer(sim.frame(0), sim.length)).toBe(true);
+    expect(isValidBuffer(sim.frame(500), sim.length)).toBe(true);
+    expect(isValidBuffer(sim.frame(3000), sim.length)).toBe(true);
   });
 
   it('is deterministic: same inputs -> same buffers', () => {
@@ -74,15 +91,18 @@ describe.each(portedFxIds())('effect %i contract', (fxId) => {
       for (const ix of [0, 255]) {
         const sim = createEffectSim(fxId, { ...base, sx, ix });
         for (const t of [0, 100, 2000, 10000]) {
-          expect(isValidBuffer(sim.frame(t), LEN)).toBe(true);
+          expect(isValidBuffer(sim.frame(t), sim.length)).toBe(true);
         }
       }
     }
   });
 
-  it('handles length 1 without crashing', () => {
+  it('handles a single-pixel frame without crashing', () => {
+    // 1×1 exercises SEGLEN<=1 fallbacks in 1D and the !is2D() guard in 2D.
     const sim = createEffectSim(fxId, {
       length: 1,
+      width: 1,
+      height: 1,
       colors: [RED, GREEN, BLUE],
     });
     expect(isValidBuffer(sim.frame(0), 1)).toBe(true);
@@ -131,7 +151,11 @@ describe('animated effects change over time', () => {
   // ranges. This harness sets neither (check2 false, custom1 0 -> the fixed-hue
   // colormode 0), so every particle sits pinned at its rest position with a
   // constant hue -- genuinely static under these params, like Palette above.
-  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70, 69, 73, 21, 207]);
+  // Hiphotic (180) is another palette-0-shortcut case (every pixel goes
+  // through color_from_palette with mcol=0 and default pbri, so the default
+  // palette returns the raw segment color regardless of the noise index) --
+  // see its spot check for a real-palette proof it animates.
+  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70, 69, 73, 21, 207, 180]);
   const animated = portedFxIds().filter((id) => !staticIds.has(id));
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {
@@ -1269,6 +1293,40 @@ describe('spot checks against known behavior', () => {
     }
     expect(sawLit).toBe(true);
     expect(snapshots.size).toBeGreaterThan(1);
+  });
+
+  it('Hiphotic (180) renders a 16x16 plasma that varies spatially and over time', () => {
+    // Needs a real palette (26) past the palette-0 shortcut, same as Noise 1.
+    const sim = createEffectSim(180, {
+      length: LEN,
+      sx: 128,
+      ix: 128,
+      pal: 26,
+    });
+    expect(sim.width).toBe(16);
+    expect(sim.height).toBe(16);
+    const frame0 = sim.frame(0);
+    const uniqueAcrossMatrix = new Set(frame0.map((px) => px.join(',')));
+    expect(uniqueAcrossMatrix.size).toBeGreaterThan(3);
+    expect(JSON.stringify(sim.frame(2000))).not.toBe(JSON.stringify(frame0));
+  });
+
+  it('Game Of Life (172) seeds ~33% live cells then evolves the grid', () => {
+    const sim = createEffectSim(172, {
+      length: LEN,
+      sx: 200,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB],
+    });
+    const first = sim.frame(0);
+    const lit = first.filter((px) => px[0] + px[1] + px[2] > 0).length;
+    expect(lit).toBeGreaterThan(256 * 0.15);
+    expect(lit).toBeLessThan(256 * 0.55);
+    // past the 1.28s initial hold, generations change the grid
+    const later = new Set<string>();
+    for (let t = 1500; t < 6000; t += 100) {
+      later.add(JSON.stringify(sim.frame(t)));
+    }
+    expect(later.size).toBeGreaterThan(1);
   });
 
   it('Color Clouds (218) drifts a per-pixel Perlin brightness field over time', () => {

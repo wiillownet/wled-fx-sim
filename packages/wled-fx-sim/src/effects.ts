@@ -10,6 +10,7 @@
  * SEGCOLOR(x) -> seg.color(x), FRAMETIME -> the 42fps firmware default.
  */
 import { Segment } from './segment.js';
+import { Segment2D } from './segment-2d.js';
 import {
   LINEARBLEND,
   NOBLEND,
@@ -6038,6 +6039,241 @@ function modeParticleFire1D(seg: Segment): void {
  * value is a per-frame function; an id absent here has no simulation yet and
  * the UI falls back to the CSS preview family (see index.ts isPorted).
  */
+// ============================================================================
+// 2D effects (matrix preview -- decisions.md 2026-07-17). Bodies take a
+// Segment2D; every one keeps the firmware's "not a 2D setup" static fallback
+// so a degenerate 1×N matrix never crashes.
+// ============================================================================
+
+// --- Hiphotic (180) ---------------------------------------------------------
+function mode2DHiphotic(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+  const a = Math.trunc(seg.now / ((seg.custom3 >> 1) + 1));
+
+  for (let x = 0; x < cols; x++) {
+    for (let y = 0; y < rows; y++) {
+      const idx = sin8(
+        cos8(Math.trunc((x * seg.speed) / 16) + Math.trunc(a / 3)) +
+          sin8(Math.trunc((y * seg.intensity) / 16) + Math.trunc(a / 4)) +
+          a,
+      );
+      seg.setPixelColorXY(x, y, seg.color_from_palette(idx, false, false, 0));
+    }
+  }
+}
+
+// --- Game Of Life (172) -----------------------------------------------------
+// The firmware packs per-cell state into bitfield Cell structs in SEGENV.data;
+// here it's parallel byte arrays in a WeakMap (auto-cleared when the sim
+// resets, since reset() builds a fresh Segment).
+interface GolState {
+  alive: Uint8Array;
+  faded: Uint8Array;
+  toggle: Uint8Array;
+  osc: Uint8Array;
+  ship: Uint8Array;
+  edge: Uint8Array;
+}
+const GOL_STATE = new WeakMap<Segment, GolState>();
+
+function mode2DGameOfLife(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const cols = seg.width;
+  const rows = seg.height;
+  const maxIndex = cols * rows;
+
+  let st = GOL_STATE.get(seg);
+  if (!st || st.alive.length !== maxIndex) {
+    st = {
+      alive: new Uint8Array(maxIndex),
+      faded: new Uint8Array(maxIndex),
+      toggle: new Uint8Array(maxIndex),
+      osc: new Uint8Array(maxIndex),
+      ship: new Uint8Array(maxIndex),
+      edge: new Uint8Array(maxIndex),
+    };
+    GOL_STATE.set(seg, st);
+  }
+
+  let generation = seg.aux0;
+  let gliderLength = seg.aux1;
+  const mutate = seg.check3;
+  const blur = map(seg.custom1, 0, 255, 255, 4);
+
+  const bgColor = seg.color(1);
+  let birthColor = seg.color_from_palette(128, false, false, 255);
+
+  const setup = seg.call === 0;
+  if (setup) {
+    // glider length LCM(rows,cols)*4, computed once
+    let a = rows;
+    let b = cols;
+    while (b) {
+      const t = b;
+      b = a % b;
+      a = t;
+    }
+    gliderLength = Math.trunc((cols * rows) / a) << 2;
+  }
+
+  if (Math.abs(seg.now - seg.step) > 2000) seg.step = 0; // timebase jump fix
+  let paused = seg.step > seg.now;
+
+  // Setup new Game of Life
+  if ((!paused && generation === 0) || setup) {
+    seg.step = seg.now + 1280; // show initial state for 1.28 seconds
+    generation = 1;
+    paused = true;
+    st.alive.fill(0);
+    st.faded.fill(0);
+    st.toggle.fill(0);
+    st.osc.fill(0);
+    st.ship.fill(0);
+
+    for (let i = 0; i < maxIndex; i++) {
+      const isAlive = seg.rng.random8(3) === 0; // ~33%
+      st.alive[i] = isAlive ? 1 : 0;
+      st.faded[i] = isAlive ? 0 : 1;
+      const x = i % cols;
+      const y = Math.trunc(i / cols);
+      st.edge[i] =
+        x === 0 || x === cols - 1 || y === 0 || y === rows - 1 ? 1 : 0;
+
+      seg.setPixelColor(
+        i,
+        isAlive
+          ? seg.color_from_palette(seg.rng.random8(), false, false, 0)
+          : bgColor,
+      );
+    }
+  }
+  seg.aux1 = gliderLength;
+
+  if (
+    paused ||
+    seg.now - seg.step < Math.trunc(1000 / map(seg.speed, 0, 255, 1, 42))
+  ) {
+    // redraw if paused or between updates, to remove blur
+    for (let i = maxIndex; i--;) {
+      if (!st.alive[i]) {
+        const cellColor = seg.getPixelColor(i);
+        if (cellColor !== bgColor) {
+          if (st.faded[i]) {
+            seg.setPixelColor(i, bgColor);
+          } else {
+            let blended = color_blend(cellColor, bgColor, 2);
+            if (blended === cellColor) {
+              blended = bgColor;
+              st.faded[i] = 1;
+            }
+            seg.setPixelColor(i, blended);
+          }
+        }
+      }
+    }
+    seg.aux0 = generation;
+    return;
+  }
+
+  // repeat detection
+  const updateOscillator = generation % 16 === 0;
+  const updateSpaceship = gliderLength !== 0 && generation % gliderLength === 0;
+  let repeatingOscillator = true;
+  let repeatingSpaceship = true;
+  let emptyGrid = true;
+
+  const parentIdx = [0, 0, 0];
+  let cIndex = maxIndex - 1;
+  for (let y = rows; y--;) {
+    for (let x = cols; x--; cIndex--) {
+      const alive = st.alive[cIndex];
+
+      if (alive) emptyGrid = false;
+      if (st.osc[cIndex] !== alive) repeatingOscillator = false;
+      if (st.ship[cIndex] !== alive) repeatingSpaceship = false;
+      if (updateOscillator) st.osc[cIndex] = alive;
+      if (updateSpaceship) st.ship[cIndex] = alive;
+
+      let neighbors = 0;
+      let aliveParents = 0;
+      for (let i = -1; i <= 1; i++) {
+        for (let j = -1; j <= 1; j++) {
+          if (!i && !j) continue;
+          let nX = x + j;
+          let nY = y + i;
+          if (st.edge[cIndex]) {
+            nX = (nX + cols) % cols;
+            nY = (nY + rows) % rows;
+          }
+          const nIndex = nX + nY * cols;
+          if (st.alive[nIndex]) {
+            neighbors++;
+            if (!st.toggle[nIndex] && neighbors < 4) {
+              // alive and not dying
+              parentIdx[aliveParents++] = nIndex;
+            }
+          }
+        }
+      }
+
+      if (alive && (neighbors < 2 || neighbors > 3)) {
+        // loneliness or overpopulation
+        st.toggle[cIndex] = 1;
+        if (blur === 255) st.faded[cIndex] = 1;
+        seg.setPixelColor(
+          cIndex,
+          st.faded[cIndex]
+            ? bgColor
+            : color_blend(seg.getPixelColor(cIndex), bgColor, blur),
+        );
+      } else if (!alive) {
+        const mutationRoll = mutate ? seg.rng.random8(128) : 1;
+        if (
+          (neighbors === 3 && mutationRoll !== 0) ||
+          (mutate && neighbors === 2 && mutationRoll === 0)
+        ) {
+          // reproduction or mutation
+          st.toggle[cIndex] = 1;
+          st.faded[cIndex] = 0;
+          if (aliveParents) {
+            // color based on a random parent
+            birthColor = seg.getPixelColor(
+              parentIdx[seg.rng.random8(aliveParents)],
+            );
+          }
+          seg.setPixelColor(cIndex, birthColor);
+        } else if (!st.faded[cIndex]) {
+          // no change; fade dead cells
+          const cellColor = seg.getPixelColor(cIndex);
+          let blended = color_blend(cellColor, bgColor, blur);
+          if (blended === cellColor) {
+            blended = bgColor;
+            st.faded[cIndex] = 1;
+          }
+          seg.setPixelColor(cIndex, blended);
+        }
+      }
+    }
+  }
+
+  // swap alive status where toggled
+  for (let i = maxIndex; i--;) {
+    st.alive[i] ^= st.toggle[i];
+    st.toggle[i] = 0;
+  }
+
+  if (repeatingOscillator || repeatingSpaceship || emptyGrid) {
+    generation = 0; // reset on next call
+    seg.step += 1024; // pause final generation for ~1 second
+  } else {
+    ++generation;
+    seg.step = seg.now;
+  }
+  seg.aux0 = generation;
+}
+
 export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   0: modeStatic,
   1: modeBlink,
@@ -6171,4 +6407,13 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   210: modeParticleChase, // "PS Chase"
   211: modeParticleStarburst, // "PS Starburst"
   213: modeParticleFire1D, // "PS Fire 1D"
+};
+
+/**
+ * The 2D effect bodies, keyed by real fx id. Same contract as EFFECT_SIMS but
+ * over a Segment2D matrix; the sim wrapper picks the registry by id.
+ */
+export const EFFECT_SIMS_2D: Record<number, (seg: Segment2D) => void> = {
+  172: mode2DGameOfLife,
+  180: mode2DHiphotic,
 };
