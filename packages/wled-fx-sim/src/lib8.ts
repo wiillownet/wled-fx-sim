@@ -691,13 +691,18 @@ function lerpPerlin(a: number, b: number, t: number): number {
   return a + (Math.imul(b - a, t) >> 14);
 }
 
-function perlin3DRaw(x: number, y: number, z: number): number {
+function perlin3DRaw(x: number, y: number, z: number, is16bit = false): number {
   const x0 = x >>> 16;
   const y0 = y >>> 16;
   const z0 = z >>> 16;
-  const x1 = x0 + 1;
-  const y1 = y0 + 1;
-  const z1 = z0 + 1;
+  let x1 = x0 + 1;
+  let y1 = y0 + 1;
+  let z1 = z0 + 1;
+  if (is16bit) {
+    x1 &= 0xff;
+    y1 &= 0xff;
+    z1 &= 0xff;
+  }
 
   const dx0 = x & 0xffff;
   const dy0 = y & 0xffff;
@@ -807,9 +812,19 @@ function perlin2DRaw(x: number, y: number, is16bit: boolean): number {
  * (a real firmware quirk: callers passing a larger int silently wrap mod
  * 65536, e.g. Noise Pal's `SEGENV.aux0 + i*scale`).
  */
-export function perlin8(x: number, y: number): number {
+export function perlin8(x: number, y: number, z?: number): number {
   const xs = (x & 0xffff) << 8;
   const ys = (y & 0xffff) << 8;
+  if (z !== undefined) {
+    // util.cpp perlin8(x, y, z) -- its own scale/offset constants (2015/33168)
+    const raw = perlin3DRaw(
+      xs >>> 0,
+      ys >>> 0,
+      ((z & 0xffff) << 8) >>> 0,
+      true,
+    );
+    return (((((raw * 2015) >> 10) + 33168) >> 8) & 0xff) >>> 0;
+  }
   const raw = perlin2DRaw(xs >>> 0, ys >>> 0, true);
   return (((((raw * 1620) >> 10) + 32771) >> 8) & 0xff) >>> 0;
 }

@@ -63,6 +63,12 @@ import {
   PS_P_RADIUS_1D,
   type ParticleSystem1D,
 } from './particles-1d.js';
+import {
+  initParticleSystem2D,
+  getParticleSystem2D,
+  PS_P_RADIUS,
+  type ParticleSystem2D,
+} from './particles-2d.js';
 
 /** WLED's default frame interval (FRAMETIME_FIXED = 1000/42). */
 export const FRAMETIME = Math.trunc(1000 / 42); // 23
@@ -6274,6 +6280,128 @@ function mode2DGameOfLife(seg: Segment2D): void {
   seg.aux0 = generation;
 }
 
+// --- PS Fire (188) ----------------------------------------------------------
+// int8 coercion for particle-velocity writes outside the engine (the engine's
+// own s8 is private; effects that poke particles directly need it too).
+const s8_2d = (v: number): number => (v << 24) >> 24;
+
+// frame-skip timestamp (firmware keeps it in 4 additionalbytes past the PS)
+const FIRE_LASTCALL = new WeakMap<Segment, { v: number }>();
+
+function modeParticleFire2D(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, seg.width); // one source per column, engine limits
+    if (!ps) return fallbackStatic(seg);
+    seg.aux0 = seg.rng.random16(); // wind position in the perlin noise
+    FIRE_LASTCALL.set(seg, { v: 0 });
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setWrapX(seg.check2);
+  ps.setMotionBlur(seg.check1 ? 170 : 0);
+  ps.setSmearBlur(seg.check1 ? 0 : 60);
+
+  const firespeed = Math.max(100, seg.speed);
+  if (seg.speed < 100) {
+    // slow: limit update rate (90FPS-20FPS), skipping frames
+    const lastcall = FIRE_LASTCALL.get(seg) ?? { v: 0 };
+    const period = seg.now - lastcall.v;
+    if (period < map(seg.speed, 0, 99, 50, 10)) {
+      seg.call--; // skipped frame: keep the counter in step
+      return;
+    }
+    lastcall.v = seg.now;
+    FIRE_LASTCALL.set(seg, lastcall);
+  }
+
+  const spread = (ps.maxX >> 5) * (seg.custom3 + 1); // fire width around center
+  const numFlames = Math.min(
+    ps.numSources,
+    4 + (Math.trunc(spread / PS_P_RADIUS) << 1),
+  );
+  const percycle = Math.trunc((numFlames * 2) / 3);
+
+  // update the flame sprays
+  for (let i = 0; i < numFlames; i++) {
+    const src = ps.sources[i];
+    if (seg.call & 1 && src.source.ttl > 0) {
+      src.source.ttl--; // every second frame
+    } else {
+      // dead flame: re-seed its properties
+      src.source.x =
+        (ps.maxX >> 1) - (spread >> 1) + seg.rng.random16(Math.max(1, spread));
+      src.source.y = -(PS_P_RADIUS << 2); // below the frame
+      src.source.ttl =
+        20 +
+        Math.trunc(
+          seg.rng.random16((seg.custom1 * seg.custom1) >> 8) /
+            (1 + (firespeed >> 5)),
+        );
+      src.maxLife = seg.rng.random16(seg.height >> 1) + 16;
+      src.minLife = src.maxLife >> 1;
+      src.vx = seg.rng.random16(5) - 2; // sideways
+      src.vy = (seg.height >> 1) + (firespeed >> 4) + (seg.custom1 >> 4); // upwards
+      src.var = 2 + seg.rng.random16(2 + (firespeed >> 4));
+    }
+  }
+
+  if (seg.call % 3 === 0) {
+    // update noise position and add wind
+    seg.aux0 = (seg.aux0 + 1) & 0xffff;
+    if (seg.call % 10 === 0) seg.aux1 = (seg.aux1 + 1) & 0xffff;
+    const windspeed = s8_2d(
+      ((perlin8(seg.aux0, seg.aux1) - 127) * seg.custom2) >> 7,
+    );
+    ps.applyForce(windspeed, 0);
+  }
+  seg.step++;
+
+  if (seg.check3) {
+    // turbulence in the bottom quarter
+    if (seg.call % map(firespeed, 0, 255, 4, 15) === 0) {
+      for (let i = 0; i < ps.usedParticles; i++) {
+        const p = ps.particles[i];
+        if (p.y < Math.trunc(ps.maxY / 4)) {
+          const curl = perlin8(p.x, p.y, (seg.step << 4) & 0xffff) - 127;
+          p.vx = s8_2d(p.vx + ((curl * (firespeed + 10)) >> 9));
+        }
+      }
+    }
+  }
+
+  // emit faster sparks at the first flame position
+  if (seg.rng.random8() < 10 + (seg.intensity >> 2)) {
+    for (let i = 0; i < ps.usedParticles; i++) {
+      const p = ps.particles[i];
+      if (p.ttl === 0) {
+        p.ttl = seg.rng.random16(seg.height) + 30;
+        p.x = ps.sources[0].source.x;
+        p.y = ps.sources[0].source.y;
+        p.vx = ps.sources[0].source.vx;
+        p.vy = s8_2d(
+          (seg.height >> 1) +
+            (firespeed >> 4) +
+            ((30 + (seg.intensity >> 1) + seg.custom1) >> 4),
+        );
+        break; // one spark per frame
+      }
+    }
+  }
+
+  let j = seg.rng.random16() & 0xff; // start at a random flame
+  for (let i = 0; i < percycle; i++) {
+    j = (j + 1) % numFlames;
+    ps.flameEmit(ps.sources[j]);
+  }
+
+  ps.updateFire(seg.intensity);
+}
+
 export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   0: modeStatic,
   1: modeBlink,
@@ -6416,4 +6544,5 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
 export const EFFECT_SIMS_2D: Record<number, (seg: Segment2D) => void> = {
   172: mode2DGameOfLife,
   180: mode2DHiphotic,
+  188: modeParticleFire2D, // "PS Fire"
 };
