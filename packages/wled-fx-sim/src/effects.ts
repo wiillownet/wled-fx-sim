@@ -55,6 +55,11 @@ import {
   type RGB,
 } from './lib8.js';
 import { fillGradient, nblendPaletteTowardPalette } from './palettes.js';
+import {
+  initParticleSystem1D,
+  getParticleSystem1D,
+  type ParticleSystem1D,
+} from './particles-1d.js';
 
 /** WLED's default frame interval (FRAMETIME_FIXED = 1000/42). */
 export const FRAMETIME = Math.trunc(1000 / 42); // 23
@@ -5087,6 +5092,53 @@ function modeColorClouds(seg: Segment): void {
   }
 }
 
+// === Particle-system 1D effects (fx 202-213) =================================
+// Built on the ported ParticleSystem1D engine (particles-1d.ts). Each mirrors
+// its FX.cpp mode_particleXXX: init the system on the first frame (stashed
+// per-Segment), then set params + emit + update per frame.
+
+// --- PS Spray 1D (208) -------------------------------------------------------
+// mode_particle1Dspray: one emitter sprays particles, gravity + bounce + blur.
+function modeParticleSpray1D(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.setWallHardness(150);
+    ps.setParticleSize(1);
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setBounce(seg.check2);
+  ps.setMotionBlur(seg.custom2);
+  const gravity = -(seg.custom3 - 16); // 0-15 down, 17-31 up
+  ps.setGravity(Math.abs(gravity));
+
+  const src = ps.sources[0];
+  src.source.hue = seg.aux0 & 0xff;
+  src.var = 20;
+  src.minLife = 200;
+  src.maxLife = 400;
+  src.source.x = map(seg.custom1, 0, 255, 0, ps.maxX);
+  src.v = map(seg.speed, 0, 255, -127 + src.var, 127 - src.var);
+  src.sourceFlags.reversegrav = gravity < 0;
+
+  if (seg.rng.random16(1 + ((255 - seg.intensity) >> 3)) === 0) {
+    ps.sprayEmit(src);
+    seg.aux0++;
+  }
+
+  ps.setColorByAge(seg.check1);
+  ps.setColorByPosition(seg.check3);
+  for (let i = 0; i < ps.usedParticles; i++)
+    ps.particleFlags[i].reversegrav = src.sourceFlags.reversegrav;
+  ps.update();
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -5214,4 +5266,5 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   72: modeNoise16_3,
   73: modeNoise16_4,
   147: modePerlinMove,
+  208: modeParticleSpray1D, // "PS Spray 1D"
 };

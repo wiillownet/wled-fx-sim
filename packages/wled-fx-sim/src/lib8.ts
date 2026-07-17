@@ -324,6 +324,42 @@ export function fast_color_scale(c: number, scale: number): number {
   return ((rb | ((wg << 8) >>> 0)) & 0xffffffff) >>> 0;
 }
 
+/**
+ * Add packed color `c2` (scaled by `scale`/256) onto `c1`, ignoring white --
+ * WLED FXparticleSystem.cpp `fast_color_scaleAdd`. On channel overflow it scales
+ * the summed color down by the brightest channel (preserving hue) rather than
+ * clamping each channel independently. Used by the 1D particle renderer.
+ */
+export function fast_color_scaleAdd(
+  c1: number,
+  c2: number,
+  scale = 255,
+): number {
+  const MASK_RB = 0x00ff00ff;
+  const MASK_G = 0x0000ff00;
+  const s = u8(scale);
+  let rb = c2 & MASK_RB;
+  let g = c2 & MASK_G;
+  // scale second color (red+blue packed in parallel; each channel stays in-byte)
+  rb = Math.trunc((rb * s) / 256) & MASK_RB;
+  g = Math.trunc((g * s) / 256) & MASK_G;
+  // add
+  rb = (c1 & MASK_RB) + rb;
+  g = (c1 & MASK_G) + g;
+  // overflow (9th bit of a channel set) -> rescale by brightest channel
+  if (((rb | (g >>> 8)) & 0x01000100) !== 0) {
+    g = g >>> 8;
+    let maxVal = rb >>> 16; // red
+    const blue = rb & 0xffff;
+    if (blue > maxVal) maxVal = blue;
+    if (g > maxVal) maxVal = g;
+    const scaleFactor = Math.trunc((255 << 8) / maxVal);
+    rb = Math.trunc((rb * scaleFactor) / 256) & MASK_RB;
+    g = (g * scaleFactor) & MASK_G;
+  }
+  return ((rb | g) & 0xffffffff) >>> 0;
+}
+
 /** Sum of R/G/B on a packed color, /3 -- FastLED CRGB::getAverageLight(). */
 export function averageLight(c: number): number {
   return ((R(c) + G(c) + B(c)) * 21846) >>> 16;
