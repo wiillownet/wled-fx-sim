@@ -126,7 +126,12 @@ describe('animated effects change over time', () => {
   // hundred-ms sampling isn't a reliable way to observe a one-frame event,
   // not a sign the port is actually static (see its spot check, which
   // samples densely enough to catch a flash).
-  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70, 69, 73, 21]);
+  // Hourglass (207) waits for a manual/auto start: dropping only runs when
+  // Start (check2) is set, and its color only moves for certain Color (custom1)
+  // ranges. This harness sets neither (check2 false, custom1 0 -> the fixed-hue
+  // colormode 0), so every particle sits pinned at its rest position with a
+  // constant hue -- genuinely static under these params, like Palette above.
+  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70, 69, 73, 21, 207]);
   const animated = portedFxIds().filter((id) => !staticIds.has(id));
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {

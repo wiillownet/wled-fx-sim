@@ -58,6 +58,8 @@ import { fillGradient, nblendPaletteTowardPalette } from './palettes.js';
 import {
   initParticleSystem1D,
   getParticleSystem1D,
+  newPSsettings1D,
+  PS_P_RADIUS_1D,
   type ParticleSystem1D,
 } from './particles-1d.js';
 
@@ -5139,6 +5141,898 @@ function modeParticleSpray1D(seg: Segment): void {
   ps.update();
 }
 
+// int8 coercion for the few PS effects that rely on C++ int8 velocity wrap.
+const s8i = (v: number): number => (v << 24) >> 24;
+
+// --- PS DripDrop (202) -------------------------------------------------------
+// mode_particleDrip: drops fall, splash at the bottom; rain mode randomizes.
+function modeParticleDrip(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 4);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.sources[0].source.hue = seg.rng.random16() & 0xff;
+    seg.aux1 = 0xffff;
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setBounce(true);
+  ps.setWallHardness(50);
+  ps.setMotionBlur(seg.custom2);
+  ps.setGravity(seg.custom3 >> 1);
+  ps.setParticleSize(seg.check3 ? 1 : 0);
+  ps.enableParticleCollisions(seg.check2);
+  const src = ps.sources[0];
+  src.sourceFlags.collide = false;
+
+  if (seg.check1) {
+    // rain: emit at random position, short life
+    if (seg.custom1 === 0) ps.setBounce(false);
+    src.var = 5;
+    src.v = -(8 + (seg.speed >> 2));
+    src.minLife = 30;
+    src.maxLife = 200;
+    src.source.x = seg.rng.random16(ps.maxX);
+  } else {
+    // drip: from the top
+    src.var = 0;
+    src.v = -(seg.speed >> 1);
+    src.minLife = 3000;
+    src.maxLife = 3000;
+    src.source.x = ps.maxX - PS_P_RADIUS_1D;
+  }
+
+  if (seg.aux1 !== seg.intensity) seg.aux0 = 1; // must not be 0 (% 0)
+  seg.aux1 = seg.intensity;
+
+  if (seg.call % seg.aux0 === 0) {
+    const interval = Math.trunc(300 / (seg.intensity + 1));
+    seg.aux0 = interval + seg.rng.random16(interval + 5);
+    src.source.hue = seg.rng.random8();
+    ps.sprayEmit(src);
+  }
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    const p = ps.particles[i];
+    if (p.ttl) {
+      if (ps.particleFlags[i].collide === false) {
+        if (p.x < PS_P_RADIUS_1D << 1) {
+          // reached the bottom
+          if (p.ttl > 120) p.ttl = 120;
+          if (seg.custom1 > 0) {
+            // splash
+            p.ttl = 0;
+            src.maxLife = 160;
+            src.minLife = 40;
+            src.var = 10 + (seg.custom1 >> 3);
+            src.v = 0;
+            src.source.hue = p.hue;
+            src.source.x = PS_P_RADIUS_1D;
+            src.sourceFlags.collide = true;
+            for (let j = 0; j < 2 + (seg.custom1 >> 2); j++) ps.sprayEmit(src);
+          }
+        }
+      } else {
+        p.ttl--; // age splash particles faster
+      }
+    }
+    if (seg.check1 && p.hue < 245) p.hue += 8;
+    if (seg.speed > 200)
+      ps.particleMoveUpdate(ps.particles[i], ps.particleFlags[i]);
+  }
+
+  ps.update();
+}
+
+// --- PS Pinball (203) --------------------------------------------------------
+// mode_particlePinball: bouncing balls / rolling balls, palette-colored.
+function modeParticlePinball(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1, 128, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.sources[0].sourceFlags.collide = true;
+    ps.sources[0].source.x = -1000;
+    seg.aux0 = 1;
+    seg.aux1 = 5000;
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setGravity(map(seg.custom3, 0, 31, 0, 8));
+  ps.setBounce(seg.custom3 > 0);
+  ps.setMotionBlur(seg.custom2);
+  ps.enableParticleCollisions(seg.check1, 255);
+  ps.setColorByPosition(seg.check3);
+  let maxParticles = Math.max(
+    20,
+    Math.trunc(seg.intensity / (1 + (seg.check2 ? 1 : 0) * (seg.custom1 >> 5))),
+  );
+  if (seg.custom1 < 255) ps.setParticleSize(seg.custom1);
+  else {
+    ps.perParticleSize = true;
+    maxParticles *= 2;
+  }
+  ps.setUsedParticles(maxParticles);
+
+  const src = ps.sources[0];
+  const settingsSum =
+    seg.speed +
+    seg.intensity +
+    (seg.check2 ? 1 : 0) +
+    seg.custom1 +
+    ps.usedParticles;
+  let updateballs = false;
+  if (seg.aux1 !== settingsSum) {
+    seg.step = seg.call;
+    updateballs = true;
+    src.maxLife = seg.custom3 ? 1000 : 0xffff;
+    src.minLife = src.maxLife >> 1;
+  }
+
+  if (seg.check2) {
+    // rolling balls
+    ps.setGravity(0);
+    ps.setWallHardness(255);
+    let speedsum = 0;
+    for (let i = 0; i < ps.usedParticles; i++) {
+      ps.particles[i].ttl = 500;
+      if (updateballs) {
+        ps.particleFlags[i].collide = true;
+        if (ps.particles[i].x === 0) {
+          ps.particles[i].x = seg.rng.random16(ps.maxX);
+          ps.particles[i].vx = seg.rng.random16() & 0x01 ? 1 : -1;
+        }
+        ps.particles[i].hue = seg.rng.random8();
+        if (ps.advPartProps) {
+          ps.advPartProps[i].sat = 255;
+          ps.advPartProps[i].size = seg.rng.random8();
+        }
+      }
+      speedsum += Math.abs(ps.particles[i].vx);
+    }
+    const avgSpeed = Math.trunc(speedsum / ps.usedParticles);
+    const setSpeed = 2 + (seg.speed >> 2);
+    if (avgSpeed < setSpeed) {
+      for (let i = 0; i < setSpeed - avgSpeed; i++) {
+        const idx = seg.rng.random16(ps.usedParticles);
+        if (Math.abs(ps.particles[idx].vx) < 120)
+          ps.particles[idx].vx += ps.particles[idx].vx >= 0 ? 1 : -1;
+      }
+    } else if (avgSpeed > setSpeed + 8) ps.applyFriction(1);
+  } else {
+    // bouncing balls
+    ps.setWallHardness(220);
+    src.var = seg.speed >> 3;
+    const newspeed = 2 + (seg.speed >> 1) - (seg.speed >> 3);
+    src.v = newspeed;
+    for (let i = 0; i < ps.usedParticles; i++) {
+      if (ps.particles[i].ttl < 50) ps.particles[i].ttl = 0;
+      else if (
+        ps.particles[i].vx === 0 &&
+        ps.particles[i].x < PS_P_RADIUS_1D + seg.custom1
+      )
+        ps.particles[i].ttl -= 50;
+      if (updateballs && seg.custom3 === 0)
+        ps.particles[i].vx = ps.particles[i].vx > 0 ? newspeed : -newspeed;
+    }
+    if (seg.call > seg.step) {
+      const interval = 260 - seg.intensity;
+      seg.step += interval + seg.rng.random16(interval);
+      src.source.hue = seg.rng.random16() & 0xff;
+      src.sat = 255;
+      src.size = seg.rng.random8();
+      ps.sprayEmit(src);
+    }
+  }
+  seg.aux1 = settingsSum;
+  ps.update();
+}
+
+// --- PS Dancing Shadows (204) ------------------------------------------------
+// mode_particleDancingShadows: spotlights sweep across, casting dark gaps.
+// (SPOT_TYPES_COUNT is shared with the classic Dancing Shadows port above.)
+function modeParticleDancingShadows(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1);
+    if (!ps) return fallbackStatic(seg);
+    ps.sources[0].maxLife = 1000;
+    ps.sources[0].minLife = 1000;
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setMotionBlur(seg.custom1);
+  ps.setSmearBlur(seg.check1 ? 120 : 0);
+  ps.setParticleSize(seg.check3 ? 1 : 0);
+  ps.setColorByPosition(seg.check2);
+  ps.setUsedParticles(map(seg.intensity, 0, 255, 10, 255));
+
+  let deadparticles = 0;
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if ((seg.call & 0x07) === 0 && ps.particleFlags[i].outofbounds) {
+      if (ps.particles[i].vx * ps.particles[i].x > 0) ps.particles[i].ttl = 0;
+    }
+    ps.particleFlags[i].perpetual = true;
+    if (seg.call % Math.trunc(32 / (1 + (seg.custom2 >> 3))) === 0)
+      ps.particles[i].hue =
+        (ps.particles[i].hue + 2 + (seg.custom2 >> 5)) & 0xff;
+    if (seg.aux0 !== seg.speed)
+      ps.particles[i].vx =
+        ps.particles[i].vx > 0 ? seg.speed >> 3 : -seg.speed >> 3;
+    if (ps.particles[i].ttl === 0) deadparticles++;
+  }
+  seg.aux0 = seg.speed;
+
+  if (deadparticles > 5 && (seg.call & 0x03) === 0) {
+    const type = seg.rng.random16(SPOT_TYPES_COUNT);
+    let speed = s8i(
+      2 + seg.rng.random16(2 + (seg.speed >> 1)) + (seg.speed >> 4),
+    );
+    const width = seg.rng.random16(1, 10);
+    let ttl = 300;
+    let position: number;
+    if (seg.rng.random16() & 0x01) {
+      position = ps.maxXpixel;
+      speed = -speed;
+    } else position = -width;
+
+    ps.sources[0].v = speed;
+    ps.sources[0].source.hue = seg.rng.random8();
+    for (let i = 0; i < width; i++) {
+      if (width > 1) {
+        switch (type) {
+          case 0: // solid
+            break;
+          case 1: // gradient
+            ttl = cubicwave8(map(i, 0, width - 1, 0, 255));
+            ttl = (ttl * ttl) >> 8;
+            break;
+          case 2: // 2x gradient
+            ttl = cubicwave8(2 * map(i, 0, width - 1, 0, 255));
+            ttl = (ttl * ttl) >> 8;
+            break;
+          case 3: // 2x dot
+            if (i > 0) position++;
+            i++;
+            break;
+          case 4: // 3x dot
+            if (i > 0) position += 2;
+            i += 2;
+            break;
+          case 5: // 4x dot
+            if (i > 0) position += 3;
+            i += 3;
+            break;
+        }
+      }
+      ps.sources[0].source.x = position * PS_P_RADIUS_1D;
+      const partidx = ps.sprayEmit(ps.sources[0]);
+      if (partidx >= 0) ps.particles[partidx].ttl = ttl;
+      position++;
+    }
+  }
+
+  ps.update();
+}
+
+// --- PS Fireworks 1D (205) ---------------------------------------------------
+// mode_particleFireworks1D: a rocket launches, arcs to apogee, then bursts.
+const fireworks1dForce = new WeakMap<Segment, { v: number }>();
+function modeParticleFireworks1D(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 4, 150, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.sources[0].sourceFlags.custom1 = true; // rocket on standby
+    fireworks1dForce.set(seg, { v: 0 });
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+  const fc = fireworks1dForce.get(seg) ?? { v: 0 };
+
+  ps.updateSystem();
+  ps.setMotionBlur(seg.custom2);
+  const gravity = 1 + (seg.speed >> 3);
+  ps.setGravity(seg.speed ? gravity : 0);
+  ps.setParticleSize(seg.check3 ? 1 : 0);
+
+  const src = ps.sources[0];
+  if (src.sourceFlags.custom1) {
+    // rocket on standby
+    src.source.ttl--;
+    if (src.source.ttl === 0) {
+      seg.aux0 = seg.rng.random8() < seg.custom1 ? 1 : 0;
+      src.sourceFlags.custom1 = false;
+      src.source.hue = seg.rng.random16() & 0xff;
+      src.var = 10 * (seg.check2 ? 1 : 0);
+      src.v = -10 * (seg.check2 ? 1 : 0);
+      src.minLife = 180;
+      src.maxLife = seg.check2 ? 700 : 240;
+      src.source.x = seg.aux0 * ps.maxX;
+      const speed = Math.trunc(
+        Math.sqrt(
+          Math.trunc(
+            (gravity * ((ps.maxX >> 2) + seg.rng.random16(ps.maxX >> 1))) / 16,
+          ),
+        ),
+      );
+      src.source.vx = Math.min(speed, 127);
+      src.source.ttl = 4000;
+      src.sat = 30;
+      src.sourceFlags.reversegrav = false;
+      if (seg.aux0) {
+        src.sourceFlags.reversegrav = true;
+        src.source.vx = -src.source.vx;
+        src.v = -src.v;
+      }
+    }
+  } else {
+    // rocket launched
+    let rocketgravity = -gravity;
+    let currentspeed = src.source.vx;
+    if (seg.aux0) {
+      rocketgravity = -rocketgravity;
+      currentspeed = -currentspeed;
+    }
+    ps.applyForceOne(src.source, rocketgravity, fc);
+    ps.particleMoveUpdate(src.source, src.sourceFlags);
+    ps.particleMoveUpdate(src.source, src.sourceFlags); // twice: faster + ages twice
+    const rocketheight = seg.aux0 ? ps.maxX - src.source.x : src.source.x;
+
+    if (currentspeed < 0 && src.source.ttl > 50) src.source.ttl = 50 - gravity;
+
+    if (src.source.ttl < 2) {
+      // explode
+      src.sourceFlags.custom1 = true;
+      src.var =
+        5 +
+        Math.trunc(
+          (((ps.maxX >> 1) + rocketheight) * (20 + (seg.intensity << 1))) /
+            (ps.maxX << 2),
+        );
+      src.minLife = 1200;
+      src.maxLife = 2600;
+      src.source.ttl = 100 + seg.rng.random16(64 - (seg.speed >> 2));
+      src.sat = seg.custom3 < 16 ? 10 + (seg.custom3 << 4) : 255;
+      src.size = seg.check3 ? seg.rng.random16(seg.intensity) : 0;
+      let explosionsize = 8 + (ps.maxXpixel >> 2) + (src.source.x >> (5 - 1));
+      explosionsize += seg.rng.random16((explosionsize * seg.intensity) >> 8);
+      ps.setColorByAge(false);
+      ps.setColorByPosition(false);
+      for (let e = 0; e < explosionsize; e++) {
+        const idx = ps.sprayEmit(src);
+        if (idx < 0) break;
+        if (seg.custom3 > 23) {
+          if (seg.custom3 === 31) {
+            ps.setColorByAge(seg.check1);
+            ps.setColorByPosition(!seg.check1);
+          } else {
+            ps.particles[idx].hue =
+              (map(
+                Math.abs(ps.particles[idx].vx),
+                0,
+                src.var,
+                0,
+                16 + seg.rng.random16(200),
+              ) +
+                src.source.hue) &
+              0xff;
+          }
+        } else if (seg.check1) {
+          src.source.hue = seg.rng.random16() & 0xff;
+        }
+      }
+    }
+  }
+  if ((seg.call & 0x01) === 0 && !src.sourceFlags.custom1) ps.sprayEmit(src);
+  if ((seg.call & 0x03) === 0) ps.applyFriction(1);
+
+  ps.update();
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (ps.particles[i].ttl > 20) ps.particles[i].ttl -= 20;
+    else ps.particles[i].ttl = 0;
+  }
+}
+
+// --- PS Sparkler (206) -------------------------------------------------------
+// mode_particleSparkler: stationary sparklers each spit short-lived sparks.
+function modeParticleSparkler(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 16, 128, true);
+    if (!ps) return fallbackStatic(seg);
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  const sparklersettings = newPSsettings1D();
+  sparklersettings.wrap = !seg.check2;
+  sparklersettings.bounce = seg.check2;
+
+  let numSparklers = ps.numSources;
+  ps.setMotionBlur(seg.custom2);
+  ps.setParticleSize(seg.check3 ? 60 : 0);
+
+  for (let i = 0; i < numSparklers; i++) {
+    const s = ps.sources[i];
+    s.source.hue = seg.rng.random16() & 0xff;
+    s.var = 0;
+    s.minLife = 150 + seg.intensity;
+    s.maxLife = 250 + (seg.intensity << 1);
+    const speed = seg.speed >> 1;
+    if (seg.check1) s.var = seg.intensity >> 3;
+    s.source.vx = s.source.vx > 0 ? speed : -speed;
+    s.source.ttl = 400;
+    s.sat = seg.custom1;
+    if (seg.speed === 255) s.source.x = seg.rng.random16(ps.maxX);
+    else ps.particleMoveUpdate(s.source, s.sourceFlags, sparklersettings);
+  }
+
+  numSparklers = Math.min(1 + (seg.custom3 >> 1), numSparklers);
+
+  if (seg.aux0 !== seg.custom3) {
+    for (let i = 1; i < numSparklers; i++) {
+      ps.sources[i].source.x =
+        (ps.sources[0].source.x + Math.trunc(ps.maxX / numSparklers) * i) %
+        ps.maxX;
+    }
+  }
+  seg.aux0 = seg.custom3;
+
+  const denom = (271 - seg.intensity) >> 4;
+  for (let i = 0; i < numSparklers; i++) {
+    if (seg.rng.random16(Math.max(1, denom)) === 0) ps.sprayEmit(ps.sources[i]);
+  }
+
+  ps.update();
+
+  const cool = 64 - (seg.intensity >> 2);
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (ps.particles[i].ttl > cool) ps.particles[i].ttl -= cool;
+    else ps.particles[i].ttl = 0;
+  }
+}
+
+// --- PS Hourglass (207) ------------------------------------------------------
+// mode_particleHourglass: particles rest, then drop one-by-one and re-stack.
+interface HourglassState {
+  settingTracker: number;
+  direction: boolean;
+}
+const hourglassState = new WeakMap<Segment, HourglassState>();
+function modeParticleHourglass(seg: Segment): void {
+  const positionOffset = PS_P_RADIUS_1D / 2;
+  let ps: ParticleSystem1D | null;
+  let st: HourglassState;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 0, 255, false);
+    if (!ps) return fallbackStatic(seg);
+    ps.setBounce(true);
+    ps.setWallHardness(100);
+    st = { settingTracker: 0, direction: false };
+    hourglassState.set(seg, st);
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+    st = hourglassState.get(seg) ?? { settingTracker: 0, direction: false };
+  }
+
+  ps.updateSystem();
+  ps.setUsedParticles(1 + ((seg.intensity * 255) >> 8));
+  ps.setMotionBlur(seg.custom2);
+  ps.setGravity(map(seg.custom3, 0, 31, 1, 30));
+  ps.enableParticleCollisions(true, 64);
+
+  const colormode = seg.custom1 >> 5;
+
+  if (seg.intensity !== st.settingTracker) {
+    st.settingTracker = seg.intensity;
+    for (let i = 0; i < ps.usedParticles; i++) {
+      ps.particleFlags[i].reversegrav = true;
+      st.direction = false;
+      seg.aux1 = 1;
+    }
+    seg.aux0 = ps.usedParticles - 1;
+  }
+
+  for (let i = 0; i < ps.usedParticles - 1; i++) {
+    if (
+      ps.particles[i].x < ps.particles[i + 1].x &&
+      !ps.particleFlags[i].fixed &&
+      !ps.particleFlags[i + 1].fixed
+    ) {
+      const tmp = ps.particles[i].x;
+      ps.particles[i].x = ps.particles[i + 1].x;
+      ps.particles[i + 1].x = tmp;
+    }
+  }
+
+  const calcTargetPos = (i: number): number =>
+    ps!.particleFlags[i].reversegrav
+      ? ps!.maxX - i * PS_P_RADIUS_1D - positionOffset
+      : (ps!.usedParticles - i) * PS_P_RADIUS_1D - positionOffset;
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (!ps.particleFlags[i].fixed && Math.abs(ps.particles[i].vx) < 5) {
+      const targetposition = calcTargetPos(i);
+      const belowtarget = ps.particleFlags[i].reversegrav
+        ? ps.particles[i].x > targetposition
+        : ps.particles[i].x < targetposition;
+      const closeToTarget =
+        Math.abs(targetposition - ps.particles[i].x) < PS_P_RADIUS_1D;
+      if (belowtarget || closeToTarget) {
+        ps.particles[i].x = targetposition;
+        ps.particleFlags[i].fixed = true;
+      }
+    }
+    if (colormode === 7) ps.setColorByPosition(true);
+    else {
+      ps.setColorByPosition(false);
+      const basehue = (seg.custom1 & 0x1f) << 3;
+      switch (colormode) {
+        case 0:
+          ps.particles[i].hue = 120;
+          break;
+        case 1:
+          ps.particles[i].hue = basehue;
+          break;
+        case 2:
+        case 3:
+          ps.particles[i].hue = ((seg.custom1 & 0x1f) << 1) + (i % 3) * 74;
+          break;
+        case 4:
+          ps.particles[i].hue =
+            basehue + Math.trunc((i * 255) / ps.usedParticles);
+          break;
+        case 5:
+          ps.particles[i].hue =
+            basehue + Math.trunc((i * 1024) / ps.usedParticles);
+          break;
+        case 6:
+          ps.particles[i].hue = i + (seg.now >> 3);
+          break;
+      }
+    }
+    if (seg.check1 && !ps.particleFlags[i].reversegrav)
+      ps.particles[i].hue += 120;
+    ps.particles[i].hue &= 0xff;
+  }
+
+  if (seg.aux1 === 1) {
+    for (let i = 0; i < ps.usedParticles; i++) {
+      ps.particleFlags[i].collide = true;
+      ps.particleFlags[i].perpetual = true;
+      ps.particles[i].ttl = 260;
+      ps.particles[i].x = calcTargetPos(i);
+      ps.particleFlags[i].fixed = true;
+    }
+  }
+
+  if (seg.aux1 === 0) {
+    if (seg.now >= seg.step) {
+      if (seg.check3 && st.direction) seg.step = seg.now + 100;
+      else seg.step = seg.now + Math.max(100, seg.speed * 100);
+      if (seg.aux0 < ps.usedParticles) {
+        ps.particleFlags[seg.aux0].reversegrav = st.direction;
+        ps.particleFlags[seg.aux0].fixed = false;
+      } else {
+        st.direction = !st.direction;
+        seg.aux1 = (seg.check2 ? 1 : 0) * seg.length + 100;
+      }
+      // aux0 is uint16 in firmware: underflow wraps to 65535 (not < usedParticles),
+      // which is what triggers the direction flip on the next frame -- emulate it.
+      if (!st.direction) seg.aux0 = (seg.aux0 - 1) & 0xffff;
+      else seg.aux0 = (seg.aux0 + 1) & 0xffff;
+    }
+  } else if (seg.check2) seg.aux1--;
+
+  ps.update();
+}
+
+// --- PS 1D Balance (209) -----------------------------------------------------
+// mode_particleBalance: particles slide back and forth like a tilting board.
+function modeParticleBalance(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1, 128);
+    if (!ps) return fallbackStatic(seg);
+    ps.setParticleSize(1);
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setMotionBlur(seg.custom2);
+  ps.setBounce(!seg.check2);
+  ps.setWrap(seg.check2);
+  const hardness = seg.custom1 > 0 ? map(seg.custom1, 0, 255, 50, 250) : 200;
+  ps.enableParticleCollisions(seg.custom1 > 0, hardness);
+  ps.setWallHardness(200);
+  ps.setUsedParticles(map(seg.intensity, 0, 255, 10, 255));
+  if (ps.usedParticles > seg.aux1) {
+    for (let i = 0; i < ps.usedParticles; i++) {
+      ps.particles[i].x = i * PS_P_RADIUS_1D;
+      ps.particles[i].ttl = 300;
+      ps.particleFlags[i].perpetual = true;
+      ps.particleFlags[i].collide = true;
+    }
+  }
+  seg.aux1 = ps.usedParticles;
+
+  for (let i = 0; i < ps.usedParticles - 1; i++) {
+    if (ps.particles[i].x > ps.particles[i + 1].x) {
+      if (
+        seg.check2 &&
+        ps.particles[i].x - ps.particles[i + 1].x > 3 * PS_P_RADIUS_1D
+      )
+        continue;
+      const tmp = ps.particles[i].x;
+      ps.particles[i].x = ps.particles[i + 1].x;
+      ps.particles[i + 1].x = tmp;
+    }
+  }
+
+  if (seg.call % (((255 - seg.speed) >> 6) + 1) === 0) {
+    const increment = (seg.speed >> 6) + 1;
+    seg.aux0 = (seg.aux0 + increment) & 0xff;
+    let xgravity = seg.check3
+      ? perlin8(seg.aux0, 0) - 128
+      : cos8(seg.aux0) - 128;
+    xgravity = Math.trunc((xgravity * ((seg.custom3 + 1) << 2)) / 128);
+    ps.applyForce(xgravity);
+  }
+
+  const randomindex = seg.rng.random16(ps.usedParticles);
+  ps.particles[randomindex].vx = s8i(
+    Math.trunc((ps.particles[randomindex].vx * 200) / 255),
+  );
+
+  if ((seg.call & 0x0f) === 0 && seg.custom3 > 4) ps.applyFriction(1);
+
+  ps.setColorByPosition(seg.check1);
+  if (!seg.check1) {
+    for (let i = 0; i < ps.usedParticles; i++)
+      ps.particles[i].hue = Math.trunc((1024 * i) / ps.usedParticles) & 0xff;
+  }
+  ps.update();
+}
+
+// --- PS Chase (210) ----------------------------------------------------------
+// mode_particleChase: evenly-spaced particles march + wrap, palette gradient.
+interface ChaseState {
+  huedir: number;
+  stepdir: number;
+}
+const chaseState = new WeakMap<Segment, ChaseState>();
+function modeParticleChase(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  let cs: ChaseState;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1, 191, true);
+    if (!ps) return fallbackStatic(seg);
+    seg.aux0 = 0xffff;
+    cs = { huedir: 1, stepdir: 1 };
+    chaseState.set(seg, cs);
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+    cs = chaseState.get(seg) ?? { huedir: 1, stepdir: 1 };
+  }
+  const adv = ps.advPartProps;
+  if (!adv) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setColorByPosition(seg.check3);
+  ps.setMotionBlur(7 + (seg.custom3 << 3));
+  let numParticles =
+    1 +
+    map(
+      seg.intensity,
+      0,
+      255,
+      0,
+      Math.trunc(ps.usedParticles / (1 + (seg.custom1 >> 5))),
+    );
+  numParticles = Math.min(numParticles, ps.usedParticles);
+  let huestep = 1 + (Math.trunc((seg.custom2 << 19) / numParticles) >> 16);
+  const settingssum =
+    seg.speed +
+    seg.intensity +
+    seg.custom1 +
+    seg.custom2 +
+    (seg.check1 ? 1 : 0) +
+    (seg.check2 ? 1 : 0) +
+    (seg.check3 ? 1 : 0);
+  if (seg.aux0 !== settingssum) {
+    if (seg.check1)
+      seg.step = (adv[0].size >> 1) + Math.trunc(ps.maxX / numParticles);
+    else {
+      seg.step = Math.trunc((ps.maxX + (PS_P_RADIUS_1D << 6)) / numParticles);
+      seg.step = Math.trunc(seg.step / PS_P_RADIUS_1D) * PS_P_RADIUS_1D;
+    }
+    for (let i = 0; i < ps.usedParticles; i++) {
+      adv[i].sat = 255;
+      ps.particles[i].x = (i - 1) * seg.step;
+      ps.particles[i].vx = seg.speed >> 2;
+      adv[i].size = seg.custom1;
+      if (seg.custom2 < 255) ps.particles[i].hue = (i * huestep) & 0xff;
+      else ps.particles[i].hue = seg.rng.random16() & 0xff;
+    }
+    seg.aux0 = settingssum;
+  }
+
+  if (seg.check1)
+    huestep = 1 + ((Math.max(huestep, 3) * (sin16(seg.now * 3) + 32767)) >> 15);
+
+  for (let i = ps.usedParticles - 1; i >= 0; i--) {
+    if (ps.particles[i].x > ps.maxX + PS_P_RADIUS_1D + adv[i].size) {
+      const nextindex = (i + 1) % ps.usedParticles;
+      ps.particles[i].x = ps.particles[nextindex].x - seg.step;
+      if (seg.check1)
+        adv[i].size = Math.max(
+          1 + (seg.custom1 >> 1),
+          (sin16(seg.now << 1) + 32767) >> 8,
+        );
+      if (seg.custom2 < 255)
+        ps.particles[i].hue = (ps.particles[nextindex].hue - huestep) & 0xff;
+      else ps.particles[i].hue = seg.rng.random16() & 0xff;
+    }
+    ps.particles[i].ttl = 300;
+  }
+
+  if (seg.check1) {
+    if (cs.stepdir === 0) cs.stepdir = 1;
+    if (cs.huedir === 0) cs.huedir = 1;
+    if (
+      seg.step >=
+      adv[0].size + PS_P_RADIUS_1D * 4 + Math.trunc(ps.maxX / numParticles)
+    )
+      cs.stepdir = -1;
+    else if (
+      seg.step <=
+      (adv[0].size >> 1) + Math.trunc(ps.maxX / numParticles)
+    )
+      cs.stepdir = 1;
+    if (seg.aux1 > 512) cs.huedir = -1;
+    else if (seg.aux1 < 50) cs.huedir = 1;
+    if (seg.call % Math.trunc(1024 / (1 + (seg.speed >> 2))) === 0)
+      seg.aux1 += cs.huedir;
+    let globalhuestep = 0;
+    if (seg.call % (1 + ((sin16(seg.now) + 32767) >> 12)) === 0)
+      globalhuestep = 2;
+    if ((seg.call & 0x1f) === 0) seg.step += cs.stepdir;
+    for (let i = 0; i < ps.usedParticles; i++) {
+      ps.particles[i].hue = (ps.particles[i].hue - globalhuestep) & 0xff;
+      ps.particles[i].vx =
+        1 +
+        (seg.speed >> 2) +
+        (((sin16(seg.now >> 1) + 32767) * (seg.speed >> 2)) >> 16);
+    }
+  }
+
+  ps.update();
+}
+
+// --- PS Starburst (211) ------------------------------------------------------
+// mode_particleStarburst: periodic bursts of shrinking, whitening fragments.
+function modeParticleStarburst(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1, 200, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.enableParticleCollisions(true, 200);
+    ps.sources[0].source.ttl = 1;
+    ps.sources[0].sat = 0;
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+  const adv = ps.advPartProps;
+  if (!adv) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setMotionBlur(seg.custom2);
+  ps.setGravity(seg.check1 ? 8 : 0);
+
+  const src = ps.sources[0];
+  const was = src.source.ttl;
+  src.source.ttl = was - 1;
+  if (was === 0) {
+    const explosionsize = 4 + seg.rng.random16(seg.intensity >> 2);
+    src.source.hue = seg.rng.random16() & 0xff;
+    src.var = 10 + (explosionsize << 1);
+    src.minLife = 150;
+    src.maxLife = 300;
+    src.source.x = seg.rng.random16(ps.maxX);
+    src.source.ttl = 10 + seg.rng.random16(255 - seg.speed);
+    src.size = seg.custom1;
+    src.sourceFlags.collide = seg.check3;
+    for (let e = 0; e < explosionsize; e++) {
+      if (seg.check2) src.source.hue = seg.rng.random16() & 0xff;
+      ps.sprayEmit(src);
+    }
+  }
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (adv[i].size) adv[i].size--;
+    if (adv[i].sat < 250) adv[i].sat += 2 + (seg.custom3 >> 3);
+  }
+
+  if (seg.call % 5 === 0) ps.applyFriction(1);
+
+  ps.update();
+}
+
+// --- PS Fire 1D (213) --------------------------------------------------------
+// mode_particleFire1D: rising flame particles from base sources, aging to cool.
+function modeParticleFire1D(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 5);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.setParticleSize(1);
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setMotionBlur(128 + (seg.custom2 >> 1));
+  ps.setColorByAge(true);
+  let emitparticles = 1;
+  let j = seg.rng.random16();
+  for (let i = 0; i < 3; i++) {
+    if (ps.sources[i].source.ttl > 50) ps.sources[i].source.ttl -= 10;
+    else ps.sources[i].source.ttl = 100 + seg.rng.random16(200);
+  }
+  for (let i = 0; i < ps.numSources; i++) {
+    j = (j + 1) % ps.numSources;
+    const s = ps.sources[j];
+    s.source.x = 0;
+    s.var = 2 + (seg.speed >> 4);
+    if (j > 2) {
+      s.minLife = 150 + seg.intensity + (j << 2);
+      s.maxLife = 200 + seg.intensity + (j << 3);
+      s.v = seg.speed >> (2 + (j << 1));
+      if (emitparticles) {
+        emitparticles--;
+        ps.sprayEmit(s);
+      }
+    } else {
+      s.minLife = s.source.ttl + seg.intensity;
+      s.maxLife = s.minLife + 50;
+      s.v = seg.speed >> 2;
+      if (seg.call & 0x01) ps.sprayEmit(s);
+    }
+  }
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    ps.particles[i].x += ps.particles[i].ttl >> 7;
+    if (ps.particles[i].ttl > 3 + ((255 - seg.custom1) >> 1))
+      ps.particles[i].ttl -= map(seg.custom1, 0, 255, 1, 3);
+  }
+
+  ps.update();
+}
+
 /**
  * Registry of ported effect bodies, keyed by real WLED fx id (v16.0.0). The
  * value is a per-frame function; an id absent here has no simulation yet and
@@ -5266,5 +6160,15 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   72: modeNoise16_3,
   73: modeNoise16_4,
   147: modePerlinMove,
+  202: modeParticleDrip, // "PS DripDrop"
+  203: modeParticlePinball, // "PS Pinball"
+  204: modeParticleDancingShadows, // "PS Dancing Shadows"
+  205: modeParticleFireworks1D, // "PS Fireworks 1D"
+  206: modeParticleSparkler, // "PS Sparkler"
+  207: modeParticleHourglass, // "PS Hourglass"
   208: modeParticleSpray1D, // "PS Spray 1D"
+  209: modeParticleBalance, // "PS 1D Balance"
+  210: modeParticleChase, // "PS Chase"
+  211: modeParticleStarburst, // "PS Starburst"
+  213: modeParticleFire1D, // "PS Fire 1D"
 };

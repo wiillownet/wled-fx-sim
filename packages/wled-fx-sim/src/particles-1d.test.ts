@@ -172,3 +172,31 @@ describe('PS Spray 1D (208)', () => {
     expect(lit).toBe(true);
   });
 });
+
+describe('PS Hourglass (207)', () => {
+  // The generic "animated" contract excludes 207 (static under its default
+  // params); this proves it does drop + animate once auto-start (check2) is on.
+  it('animates when auto-start is enabled', () => {
+    const sim = createEffectSim(207, {
+      length: 40,
+      sx: 5,
+      ix: 200,
+      custom1: 140,
+      custom2: 80,
+      custom3: 4,
+      check1: true,
+      check2: true,
+      check3: true,
+      pal: 34,
+    });
+    const snaps = new Set<string>();
+    let lit = false;
+    for (let t = 0; t <= 8000; t += 100) {
+      const f = sim.frame(t);
+      snaps.add(JSON.stringify(f));
+      if (f.some(([r, g, b]) => r + g + b > 0)) lit = true;
+    }
+    expect(lit).toBe(true);
+    expect(snaps.size).toBeGreaterThan(1);
+  });
+});

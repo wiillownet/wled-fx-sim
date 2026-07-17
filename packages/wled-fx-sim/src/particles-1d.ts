@@ -82,7 +82,7 @@ export interface PSsource1D {
   size: number;
 }
 
-interface PSsettings1D {
+export interface PSsettings1D {
   bounce: boolean;
   killoutofbounds: boolean;
   wrap: boolean;
@@ -90,6 +90,19 @@ interface PSsettings1D {
   useCollisions: boolean;
   colorByAge: boolean;
   colorByPosition: boolean;
+}
+
+/** All-false PSsettings1D -- for effects that pass custom move options (e.g. Sparkler). */
+export function newPSsettings1D(): PSsettings1D {
+  return {
+    bounce: false,
+    killoutofbounds: false,
+    wrap: false,
+    useGravity: false,
+    useCollisions: false,
+    colorByAge: false,
+    colorByPosition: false,
+  };
 }
 
 function newParticle(): PSparticle1D {
@@ -358,8 +371,8 @@ export class ParticleSystem1D {
   particleMoveUpdate(
     part: PSparticle1D,
     partFlags: PSparticleFlags1D,
-    options: PSsettings1D | null,
-    advancedproperties: PSadvancedParticle1D | null,
+    options: PSsettings1D | null = null,
+    advancedproperties: PSadvancedParticle1D | null = null,
   ): void {
     const opt = options ?? this.settings;
     if (part.ttl <= 0) return;
