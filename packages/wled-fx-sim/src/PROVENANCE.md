@@ -172,3 +172,26 @@ Verified against `.wled-src/palettes.cpp` (v16.0.0) during the split into
    `packages/fastled-math/src/`; the WLED-original remainder stays here and
    re-exports the MIT surface. The math package imports zero EUPL code
    (enforced by CI).
+
+## [2026-07-17] cpt-city terms research (per-collection COPYING.yaml, archive v3.3.2)
+
+Fetched the cpt-city c3g package (archive relocated to
+phillips.shef.ac.uk/pub/cpt-city/; seaviewsensing.com now redirects) and read
+each collection's `COPYING.yaml`. The 47 cpt-city palettes split four ways —
+full tables + quoted terms in THIRD-PARTY-LICENSES.md:
+
+- **A (15, bhw): CC-BY-3.0** — redistributable with attribution. Effectively
+  clear.
+- **B (13, nd + gmt): GPL-family copyleft** — nd's own text reads like GFDL 1.2
+  ("GNU Free License, Version 1.2"), archive files it as GPL; gmt is GPLv2.
+  Open question: copyleft data inside an EUPL-1.2 package (EUPL Art. 5 lists
+  GPL as a *downstream* compatible licence; the inbound direction is the
+  consult item).
+- **C (9, es + arendal): informal affirmative grant, credit required** —
+  distribution explicitly allowed with credit.
+- **D (10, ds/hult/ing/ma/mjf/neota): "free to use" only** — no distribution
+  grant; the archive's default rule says no permission to distribute. Fallback
+  if not cleared: drop these 10 from the baked table.
+
+The remaining legal-consult scope is exactly groups B + D (23 palettes) plus
+the EUPL "Communication"/web-app question. Groups A + C ship with attribution.
