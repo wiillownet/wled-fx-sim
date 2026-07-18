@@ -29,7 +29,14 @@
     "@wiillownet/fastled-math": "workspace:*"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./lib8": "./src/lib8.ts",
+    "./segment": "./src/segment.ts",
+    "./segment-2d": "./src/segment-2d.ts",
+    "./palettes": "./src/palettes.ts",
+    "./effects": "./src/effects.ts",
+    "./particles-1d": "./src/particles-1d.ts",
+    "./particles-2d": "./src/particles-2d.ts"
   },
   "publishConfig": {
     "exports": {
@@ -42,6 +49,76 @@
           "types": "./dist/index.d.cts",
           "default": "./dist/index.cjs"
         }
+      },
+      "./lib8": {
+        "import": {
+          "types": "./dist/lib8.d.ts",
+          "default": "./dist/lib8.js"
+        },
+        "require": {
+          "types": "./dist/lib8.d.cts",
+          "default": "./dist/lib8.cjs"
+        }
+      },
+      "./segment": {
+        "import": {
+          "types": "./dist/segment.d.ts",
+          "default": "./dist/segment.js"
+        },
+        "require": {
+          "types": "./dist/segment.d.cts",
+          "default": "./dist/segment.cjs"
+        }
+      },
+      "./segment-2d": {
+        "import": {
+          "types": "./dist/segment-2d.d.ts",
+          "default": "./dist/segment-2d.js"
+        },
+        "require": {
+          "types": "./dist/segment-2d.d.cts",
+          "default": "./dist/segment-2d.cjs"
+        }
+      },
+      "./palettes": {
+        "import": {
+          "types": "./dist/palettes.d.ts",
+          "default": "./dist/palettes.js"
+        },
+        "require": {
+          "types": "./dist/palettes.d.cts",
+          "default": "./dist/palettes.cjs"
+        }
+      },
+      "./effects": {
+        "import": {
+          "types": "./dist/effects.d.ts",
+          "default": "./dist/effects.js"
+        },
+        "require": {
+          "types": "./dist/effects.d.cts",
+          "default": "./dist/effects.cjs"
+        }
+      },
+      "./particles-1d": {
+        "import": {
+          "types": "./dist/particles-1d.d.ts",
+          "default": "./dist/particles-1d.js"
+        },
+        "require": {
+          "types": "./dist/particles-1d.d.cts",
+          "default": "./dist/particles-1d.cjs"
+        }
+      },
+      "./particles-2d": {
+        "import": {
+          "types": "./dist/particles-2d.d.ts",
+          "default": "./dist/particles-2d.js"
+        },
+        "require": {
+          "types": "./dist/particles-2d.d.cts",
+          "default": "./dist/particles-2d.cjs"
+        }
       }
     },
     "main": "./dist/index.cjs",
@@ -51,5 +128,8 @@
   "scripts": {
     "build": "tsup",
     "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

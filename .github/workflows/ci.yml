@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      # MIT-purity guard: fastled-math (MIT) importing wled-fx-sim (EUPL) is a
+      # license violation, not a style nit. This must stay red-blocking.
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build
+      - name: publint + attw (published-shape checks)
+        run: |
+          cd packages/fastled-math
+          pnpm pack --out /tmp/fastled-math.tgz
+          pnpm exec publint --strict /tmp/fastled-math.tgz
+          pnpm exec attw --profile node16 /tmp/fastled-math.tgz
+          cd ../wled-fx-sim
+          pnpm pack --out /tmp/wled-fx-sim.tgz
+          pnpm exec publint --strict /tmp/wled-fx-sim.tgz
+          pnpm exec attw --profile node16 /tmp/wled-fx-sim.tgz

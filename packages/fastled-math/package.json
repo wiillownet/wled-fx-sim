@@ -26,7 +26,9 @@
     "THIRD-PARTY-LICENSES.md"
   ],
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./lib8": "./src/lib8.ts",
+    "./palettes": "./src/palettes.ts"
   },
   "publishConfig": {
     "exports": {
@@ -39,6 +41,26 @@
           "types": "./dist/index.d.cts",
           "default": "./dist/index.cjs"
         }
+      },
+      "./lib8": {
+        "import": {
+          "types": "./dist/lib8.d.ts",
+          "default": "./dist/lib8.js"
+        },
+        "require": {
+          "types": "./dist/lib8.d.cts",
+          "default": "./dist/lib8.cjs"
+        }
+      },
+      "./palettes": {
+        "import": {
+          "types": "./dist/palettes.d.ts",
+          "default": "./dist/palettes.js"
+        },
+        "require": {
+          "types": "./dist/palettes.d.cts",
+          "default": "./dist/palettes.cjs"
+        }
       }
     },
     "main": "./dist/index.cjs",
@@ -48,5 +70,8 @@
   "scripts": {
     "build": "tsup",
     "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
