@@ -1,10 +1,10 @@
 /**
- * The uint8/uint16 fixed-point + color primitive kit WLED 1D effects lean on,
- * ported faithfully from WLED firmware v16.0.0 (wled00/wled_math.cpp,
- * wled00/util.cpp, wled00/colors.cpp) and its bundled FastLED-derived helpers
- * (wled00/src/dependencies/fastled_slim). Pure TS, no DOM/Svelte -- this is the
- * math, not the render (decisions.md, 2026-07-03 "Effect previews become real
- * 1D WLED simulations").
+ * The WLED-original half of the uint8/uint16 fixed-point + color primitive kit
+ * WLED effects lean on, ported faithfully from WLED firmware v16.0.0
+ * (wled00/wled_math.cpp, wled00/util.cpp, wled00/colors.cpp, wled00/prng.h).
+ * The FastLED-derived half (scale/wave/ease, packed-color bit utilities,
+ * colorFromPalette, hsv2rgb_rainbow) lives in @wiillownet/fastled-math and is
+ * re-exported here so effect code has one import surface.
  *
  * Colors are packed uint32 `0x00RRGGBB` (WLED's native pixel word; the W channel
  * is unused for RGB strips) so the color helpers stay bit-for-bit like firmware.
@@ -12,59 +12,41 @@
  * where WLED's integer types wrap, because effect motion depends on it.
  */
 
-/** Unpacked pixel: [r, g, b], each 0-255. */
-export type RGB = [number, number, number];
+import { R, G, B, W, rgbw32, scale8, scale16 } from '@wiillownet/fastled-math';
+
+export type { RGB } from '@wiillownet/fastled-math';
+export {
+  averageLight,
+  B,
+  BLACK,
+  colorFromPalette,
+  cubicwave8,
+  ease8InOutCubic,
+  G,
+  hsv2rgb_rainbow,
+  lerp8by8,
+  LINEARBLEND,
+  LINEARBLEND_NOWRAP,
+  NOBLEND,
+  pack,
+  qadd8,
+  qsub8,
+  quadwave8,
+  R,
+  rgbw32,
+  scale8,
+  scale8_video,
+  scale16,
+  triwave8,
+  triwave16,
+  unpack,
+  W,
+} from '@wiillownet/fastled-math';
 
 // --- byte helpers -----------------------------------------------------------
 
 const u8 = (x: number): number => x & 0xff;
 const u16 = (x: number): number => x & 0xffff;
-
-/** min(i+j, 255) -- FastLED qadd8. */
-export function qadd8(i: number, j: number): number {
-  const t = u8(i) + u8(j);
-  return t > 255 ? 255 : t;
-}
-
-/** max(i-j, 0) -- FastLED qsub8. */
-export function qsub8(i: number, j: number): number {
-  const t = u8(i) - u8(j);
-  return t < 0 ? 0 : t;
-}
-
-/** (i * (1+scale)) >> 8 -- FastLED scale8 (FASTLED_SCALE8_FIXED form WLED ships). */
-export function scale8(i: number, scale: number): number {
-  return (u8(i) * (1 + u8(scale))) >> 8;
-}
-
-/** scale8 that never fully dims a non-zero input unless scale is 0 -- FastLED scale8_video. */
-export function scale8_video(i: number, scale: number): number {
-  return ((u8(i) * u8(scale)) >> 8) + (i && scale ? 1 : 0);
-}
-
-/** (i * (1+scale)) >> 16 -- FastLED scale16. */
-export function scale16(i: number, scale: number): number {
-  return Math.trunc((u16(i) * (1 + u16(scale))) / 0x10000);
-}
-
-/** a + (b-a)*frac/256 -- FastLED lerp8by8. */
-export function lerp8by8(a: number, b: number, frac: number): number {
-  return u8(a + (((b - a) * (frac + 1)) >> 8));
-}
-
-/** Triangle wave, uint8 in/out -- FastLED triwave8. */
-export function triwave8(inp: number): number {
-  let x = u8(inp);
-  if (x & 0x80) x = 255 - x;
-  return u8(x << 1);
-}
-
-/** Triangle wave, uint16 in/out -- FastLED triwave16. */
-export function triwave16(inp: number): number {
-  const x = u16(inp);
-  if (x < 0x8000) return x * 2;
-  return 0xffff - (x - 0x8000) * 2;
-}
 
 // --- trig (WLED's own integer sine, NOT FastLED's table sin8) ---------------
 
@@ -125,6 +107,8 @@ export function cos_approx(theta: number): number {
 
 // --- beat / beatsin, ported from WLED util.cpp ------------------------------
 // `now` is passed in (WLED reads the global millis()); timebase is an offset.
+// FastLED lineage, but WLED-reimplemented AND built on the EUPL sin16_t above,
+// so they route with the WLED-original code (PROVENANCE.md).
 
 /** 16-bit sawtooth at a given BPM (Q8.8) -- WLED beat88. */
 export function beat88(bpm88: number, now: number, timebase = 0): number {
@@ -184,54 +168,7 @@ export function beatsin88_t(
   return lowest + scale16(bs, highest - lowest);
 }
 
-/** S-curve ease, uint8 in/out -- FastLED ease8InOutCubic (fastled_slim.cpp). */
-export function ease8InOutCubic(i: number): number {
-  const ii = u8(i) * u8(i);
-  const factor = (3 << 8) - (u8(i) << 1); // 3 - 2i, Q8
-  return (ii * factor) >>> 16;
-}
-
-/** Cubic-eased triangle wave, uint8 in/out -- FastLED cubicwave8. */
-export function cubicwave8(inp: number): number {
-  return ease8InOutCubic(triwave8(inp));
-}
-
-/** S-curve ease, uint8 in/out -- FastLED ease8InOutQuad (fastled_slim.cpp). */
-function ease8InOutQuad(i: number): number {
-  let j = u8(i);
-  if (j & 0x80) j = 255 - j;
-  const jj = (j * j) >>> 7;
-  return i & 0x80 ? 255 - jj : jj;
-}
-
-/** Quadratic-eased triangle wave, uint8 in/out -- FastLED quadwave8. */
-export function quadwave8(inp: number): number {
-  return ease8InOutQuad(triwave8(inp));
-}
-
 // --- packed-color helpers (uint32 0xWWRRGGBB), ported from WLED colors.cpp ---
-
-export const BLACK = 0x000000;
-
-/** Pack channels into WLED's 0xWWRRGGBB word (unsigned). */
-export function rgbw32(r: number, g: number, b: number, w = 0): number {
-  return ((u8(w) << 24) | (u8(r) << 16) | (u8(g) << 8) | u8(b)) >>> 0;
-}
-
-export const R = (c: number): number => (c >>> 16) & 0xff;
-export const G = (c: number): number => (c >>> 8) & 0xff;
-export const B = (c: number): number => c & 0xff;
-export const W = (c: number): number => (c >>> 24) & 0xff;
-
-/** [r,g,b] from a packed word. */
-export function unpack(c: number): RGB {
-  return [R(c), G(c), B(c)];
-}
-
-/** Pack an [r,g,b] triple. */
-export function pack(rgb: RGB): number {
-  return rgbw32(rgb[0], rgb[1], rgb[2]);
-}
 
 const TWO_CH = 0x00ff00ff;
 const WG_MASK = 0xff00ff00; // ~TWO_CH, kept explicit so JS bitwise-NOT sign issues can't bite
@@ -257,8 +194,8 @@ export function color_blend(
 
 /** Saturating (or ratio-preserving) additive blend -- WLED color_add. */
 export function color_add(c1: number, c2: number, preserveCR = false): number {
-  if (c1 === BLACK) return c2 >>> 0;
-  if (c2 === BLACK) return c1 >>> 0;
+  if (c1 === 0) return c2 >>> 0;
+  if (c2 === 0) return c1 >>> 0;
   let rb = (c1 & TWO_CH) + (c2 & TWO_CH);
   let wg = ((c1 >>> 8) & TWO_CH) + ((c2 >>> 8) & TWO_CH);
   if (preserveCR) {
@@ -290,7 +227,7 @@ export function color_add(c1: number, c2: number, preserveCR = false): number {
  */
 export function color_fade(c1: number, amount: number, video = false): number {
   const amt = u8(amount);
-  if (c1 === BLACK || amt === 0) return 0;
+  if (c1 === 0 || amt === 0) return 0;
   if (amt === 255) return c1 >>> 0;
   const rb = (c1 & TWO_CH) >>> 0;
   const wg = ((c1 >>> 8) & TWO_CH) >>> 0;
@@ -360,11 +297,6 @@ export function fast_color_scaleAdd(
   return ((rb | g) & 0xffffffff) >>> 0;
 }
 
-/** Sum of R/G/B on a packed color, /3 -- FastLED CRGB::getAverageLight(). */
-export function averageLight(c: number): number {
-  return ((R(c) + G(c) + B(c)) * 21846) >>> 16;
-}
-
 // --- inverse gamma (WLED colors.h/.cpp NeoGammaWLEDMethod) ------------------
 // WLED builds gammaT_inv as a 256-entry LUT from the *device's* gamma setting
 // (gammaCorrectVal, default 2.2) via calcGammaTable(); this sim has no device
@@ -396,150 +328,6 @@ export function gamma32inv(c: number): number {
     gamma8inv(B(c)),
     gamma8inv(W(c)),
   );
-}
-
-// --- palette lookup (WLED ColorFromPalette) ---------------------------------
-
-/** Palette interpolation modes -- FastLED TBlendType. */
-export const NOBLEND = 0;
-export const LINEARBLEND = 1;
-export const LINEARBLEND_NOWRAP = 2;
-
-/**
- * A single color from a 16-entry palette -- WLED ColorFromPalette (colors.cpp).
- * `pal` is 16 RGB entries; `index` is 0-255 (wraps); `brightness` scales output.
- */
-export function colorFromPalette(
-  pal: RGB[],
-  index: number,
-  brightness = 255,
-  blendType: number = LINEARBLEND,
-): number {
-  let idx = index;
-  if (blendType === LINEARBLEND_NOWRAP) {
-    idx = (u8(idx) * 0xf0) >> 8;
-  }
-  const hi4 = u8(idx) >> 4;
-  const lo4 = idx & 0x0f;
-  let red1 = pal[hi4][0];
-  let green1 = pal[hi4][1];
-  let blue1 = pal[hi4][2];
-  if (lo4 && blendType !== NOBLEND) {
-    const entry = hi4 === 15 ? pal[0] : pal[hi4 + 1];
-    const f2 = lo4 << 4;
-    const f1 = 256 - f2;
-    red1 = (red1 * f1 + entry[0] * f2) >> 8;
-    green1 = (green1 * f1 + entry[1] * f2) >> 8;
-    blue1 = (blue1 * f1 + entry[2] * f2) >> 8;
-  }
-  const bri = u8(brightness);
-  if (bri < 255) {
-    const scale = bri + 1;
-    red1 = (red1 * scale) >> 8;
-    green1 = (green1 * scale) >> 8;
-    blue1 = (blue1 * scale) >> 8;
-  }
-  return rgbw32(red1, green1, blue1, 0);
-}
-
-// --- HSV -> RGB (WLED hsv2rgb_rainbow, 16-bit hue) --------------------------
-
-/**
- * FastLED "rainbow" HSV->RGB with 16-bit hue, ported from WLED's
- * fastled_slim hsv2rgb_rainbow. Returns a packed 0x00RRGGBB word. Used by
- * color_wheel (rainbow-family effects).
- */
-export function hsv2rgb_rainbow(h: number, s: number, v: number): number {
-  const hue = (u16(h) >> 8) & 0xff;
-  const sat = u8(s);
-  let val = u8(v);
-  const offset = h & 0x1fff;
-  const third16 = offset * 21846;
-  const third = (third16 >>> 21) & 0xff;
-  let r: number;
-  let g: number;
-  let b: number;
-
-  if (!(hue & 0x80)) {
-    if (!(hue & 0x40)) {
-      if (!(hue & 0x20)) {
-        r = 255 - third;
-        g = third;
-        b = 0;
-      } else {
-        r = 171;
-        g = 85 + third;
-        b = 0;
-      }
-    } else {
-      if (!(hue & 0x20)) {
-        const twothirds = (third16 >>> 20) & 0xff;
-        r = 171 - twothirds;
-        g = 170 + third;
-        b = 0;
-      } else {
-        r = 0;
-        g = 255 - third;
-        b = third;
-      }
-    }
-  } else {
-    if (!(hue & 0x40)) {
-      if (!(hue & 0x20)) {
-        const twothirds = (third16 >>> 20) & 0xff;
-        r = 0;
-        g = 171 - twothirds;
-        b = 85 + twothirds;
-      } else {
-        r = third;
-        g = 0;
-        b = 255 - third;
-      }
-    } else {
-      if (!(hue & 0x20)) {
-        r = 85 + third;
-        g = 0;
-        b = 171 - third;
-      } else {
-        r = 170 + third;
-        g = 0;
-        b = 85 - third;
-      }
-    }
-  }
-
-  if (sat !== 255) {
-    if (sat === 0) {
-      r = 255;
-      g = 255;
-      b = 255;
-    } else {
-      let desat = 255 - sat;
-      desat = desat * desat;
-      const floorB = desat >>> 8;
-      const satscale = 0xffff - desat;
-      if (r) r = (r * satscale) >>> 16;
-      if (g) g = (g * satscale) >>> 16;
-      if (b) b = (b * satscale) >>> 16;
-      r += floorB;
-      g += floorB;
-      b += floorB;
-    }
-  }
-
-  if (val !== 255) {
-    if (val === 0) {
-      r = 0;
-      g = 0;
-      b = 0;
-    } else {
-      val = val * val + 512;
-      if (r) r = ((r * val) >>> 16) + 1;
-      if (g) g = ((g * val) >>> 16) + 1;
-      if (b) b = ((b * val) >>> 16) + 1;
-    }
-  }
-  return rgbw32(r & 0xff, g & 0xff, b & 0xff, 0);
 }
 
 /**

@@ -26,6 +26,9 @@ import { pack } from './lib8.js';
 export type { RGB } from './lib8.js';
 export { FRAMETIME } from './effects.js';
 
+/** The WLED release every effect here is ported against (tag v16.0.0, commit 4374f01). */
+export const WLED_SOURCE_VERSION = '16.0.0';
+
 /** Offline default matrix dimensions for 2D previews. */
 export const DEFAULT_MATRIX_WIDTH = 16;
 export const DEFAULT_MATRIX_HEIGHT = 16;

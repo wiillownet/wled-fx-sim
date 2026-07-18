@@ -1,0 +1,52 @@
+{
+  "name": "@wiillownet/fastled-math",
+  "version": "0.0.0",
+  "description": "FastLED-derived 8/16-bit fixed-point math, color, and palette kit in TypeScript. Unofficial. Not affiliated with or endorsed by the WLED/FastLED projects.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wiillownet/wled-fx-sim.git",
+    "directory": "packages/fastled-math"
+  },
+  "homepage": "https://github.com/wiillownet/wled-fx-sim/tree/main/packages/fastled-math#readme",
+  "bugs": "https://github.com/wiillownet/wled-fx-sim/issues",
+  "keywords": [
+    "fastled",
+    "led",
+    "color",
+    "palette",
+    "fixed-point",
+    "hsv",
+    "noise"
+  ],
+  "files": [
+    "dist",
+    "THIRD-PARTY-LICENSES.md"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      }
+    },
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  }
+}

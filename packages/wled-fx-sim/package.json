@@ -1,0 +1,55 @@
+{
+  "name": "@wiillownet/wled-fx-sim",
+  "version": "0.0.0",
+  "description": "Headless TypeScript preview simulator of WLED's effects: FX.cpp ports, 1D/2D particle engines, and the 2D matrix layer, ported from WLED v16.0.0. Unofficial. Not affiliated with or endorsed by the WLED/FastLED projects.",
+  "license": "EUPL-1.2",
+  "type": "module",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wiillownet/wled-fx-sim.git",
+    "directory": "packages/wled-fx-sim"
+  },
+  "homepage": "https://github.com/wiillownet/wled-fx-sim/tree/main/packages/wled-fx-sim#readme",
+  "bugs": "https://github.com/wiillownet/wled-fx-sim/issues",
+  "keywords": [
+    "wled",
+    "led",
+    "effects",
+    "simulator",
+    "preview",
+    "particle-system",
+    "fastled"
+  ],
+  "files": [
+    "dist",
+    "THIRD-PARTY-LICENSES.md"
+  ],
+  "dependencies": {
+    "@wiillownet/fastled-math": "workspace:*"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      }
+    },
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts"
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run"
+  }
+}
