@@ -1,0 +1,6 @@
+node_modules/
+dist/
+
+# Vendored upstream WLED/FastLED C++ used locally for diffing/provenance.
+# Never commit: committing it would redistribute EUPL source files.
+.wled-src/
