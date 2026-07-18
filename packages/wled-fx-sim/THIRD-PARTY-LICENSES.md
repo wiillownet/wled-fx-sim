@@ -34,7 +34,8 @@ THIRD-PARTY-LICENSES.md for the full MIT text.
 > "The gradients on cpt-city are copyrighted by their authors" and "If the
 > author has not specified a licence then you do not have permission to
 > distribute the gradients." Terms below are per-author. No license is
-> asserted for this data here; groups B and D remain a legal-consult item.
+> asserted for this data here; group D remains the open item (group B
+> resolved to EUPL-compatible licences -- see below).
 > Mitigating context for all groups: this exact data has been redistributed
 > for years by MIT-licensed FastLED and EUPL-licensed WLED, and a 16-stop
 > color list is thin expression.
@@ -66,18 +67,21 @@ cpt-city, CC-BY-3.0; converted to 16-entry palettes).
 | 69 | Red Tide | `bhw4_097_gp` | bhw | http://seaviewsensing.com/pub/cpt-city/bhw/bhw4/bhw4_097.c3g |
 | 70 | Candy2 | `bhw4_017_gp` | bhw | http://seaviewsensing.com/pub/cpt-city/bhw/bhw4/bhw4_017.c3g |
 
-### Group B — GPL-family (copyleft; compatibility with this package's EUPL-1.2 UNRESOLVED)
+### Group B — copyleft-family, RESOLVED to EUPL-compatible licences (attribution + notices required)
 
-`nd` (Nevit Dilmen, 2007): the author's statement reads "Permission is
-granted to copy, distribute and/or modify this package under the terms of
-the GNU Free License, Version 1.2 or any later version published by the
-Free Software Foundation" — the archive files this informally as "GPL", but
-the quoted text matches GFDL 1.2 wording; which license applies is itself
-ambiguous. `gmt` (Generic Mapping Tools palettes, Wessel/Smith/Trawoeger):
-**GPLv2**. Copyleft data inside an EUPL-1.2 package is the open question:
-EUPL Art. 5 lists GPL-2.0/3.0 as compatible *downstream* licences, but the
-required direction here (GPL-licensed data carried *inside* an EUPL work)
-is exactly what the legal consult must answer.
+`nd` (Nevit Dilmen): the archive's 2007 record quotes an ambiguous "GNU Free
+License, Version 1.2" statement, but the author's own DeviantArt page for the
+exact source pack ("900gradients for GIMP Inkscape", submitted 2008-11-16,
+the page cpt-city's COPYING.yaml links as the source) declares **"This work
+is licensed under a Creative Commons Attribution-Share Alike 3.0 License"**
+(verified via archived snapshot, 2026-07-17). CC-BY-SA 3.0 is listed in
+EUPL-1.2's Appendix of compatible licences "for works other than software".
+`gmt` (GMT_drywet): the palette still ships in current GMT
+(`share/cpt/gmt/drywet.cpt`, "Created by Ed Maurer, University of
+Washington"); GMT has been **LGPL-3-or-later** since GMT 5.0.0, and LGPL-3
+is likewise on the EUPL-1.2 compatible-licences appendix. Confirmation of
+both readings is being sought from the cpt-city maintainer; attribution and
+licence notices ship regardless.
 
 | WLED id | WLED name | cpt-city gradient | collection | originally from |
 | --- | --- | --- | --- | --- |

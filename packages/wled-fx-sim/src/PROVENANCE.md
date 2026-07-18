@@ -195,3 +195,22 @@ full tables + quoted terms in THIRD-PARTY-LICENSES.md:
 
 The remaining legal-consult scope is exactly groups B + D (23 palettes) plus
 the EUPL "Communication"/web-app question. Groups A + C ship with attribution.
+
+## [2026-07-17] cpt-city research round 2: group B resolved, D confirmed stuck
+
+- **gmt / GMT_drywet:** still ships in current GMT (`share/cpt/gmt/drywet.cpt`,
+  by Ed Maurer); GMT is LGPL-3-or-later since 5.0.0. LGPL-3 is on EUPL-1.2's
+  compatible-licences appendix. Resolved.
+- **nd (12 palettes):** the author's own DeviantArt page for the exact source
+  pack ("900gradients for GIMP Inkscape", 2008-11-16 — the page the archive's
+  COPYING.yaml cites) is marked CC-BY-SA 3.0 (archived snapshot verified).
+  CC-BY-SA 3.0 is on EUPL-1.2's appendix "for works other than software".
+  Supersedes the ambiguous GFDL-ish 2007 quote. Resolved.
+- **Group D:** ds's linked deviation page carries NO CC marker (DeviantArt
+  default, all rights reserved) — confirms the closed reading. hult/ing/ma/
+  mjf/neota have no reachable statements (dead sites, pre-CC contributions).
+  Research ceiling reached: only the cpt-city maintainer's permission records
+  (email pending) or dropping the 10 palettes resolves D.
+- Precedent noted for the file: CRAN's `cptcity` package (GPL-3) redistributes
+  7,140 cpt-city gradients; GMT (LGPL) vendors cpt-city palettes in-tree;
+  cpt-city's maintainer publicly welcomed FastLED's PaletteKnife use.
