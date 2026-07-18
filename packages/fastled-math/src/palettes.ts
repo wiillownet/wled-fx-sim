@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// FastLED palette data (Copyright (c) 2013 FastLED, MIT) as shipped by
+// WLED v16.0.0 wled00/palettes.cpp ('imported from FastLED @ 3.6.0 ... MIT').
 /**
  * FastLED's named 16-entry palettes, as WLED v16.0.0 ships them
  * (wled00/palettes.cpp "FastLED Palettes" section: "Palettes imported from

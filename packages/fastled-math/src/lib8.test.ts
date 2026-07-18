@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Test code original to this package.
 import { describe, expect, it } from 'vitest';
 import type { RGB } from './lib8.js';
 import {

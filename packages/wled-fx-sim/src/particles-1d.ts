@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: EUPL-1.2
+// Ported from WLED v16.0.0 (commit 4374f01) wled00/FXparticleSystem.cpp/.h (1D engine
+// + PS-1D effects, fx 202-213).
+// Copyright (c) 2016-present Christian Schwinne and individual WLED contributors
 /**
  * Port of WLED's 1D particle-system engine (wled00/FXparticleSystem.h/.cpp, tag
  * v16.0.0) -- the shared physics/rendering framework the "PS" 1D effects (fx ids

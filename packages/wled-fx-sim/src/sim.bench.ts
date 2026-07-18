@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: EUPL-1.2
+// Original to this package (no upstream port).
 /**
  * Micro-benchmarks for the headless 1D effect simulator. Answers "how expensive
  * is one preview strip's per-frame sim work?" across a spread of ported effects

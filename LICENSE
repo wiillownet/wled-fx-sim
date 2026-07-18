@@ -1,0 +1,19 @@
+This repository is a monorepo holding packages under two different licenses.
+There is no single repository-wide license; each package's LICENSE file is the
+authoritative one for the code under it:
+
+  packages/fastled-math   MIT           see packages/fastled-math/LICENSE
+  packages/wled-fx-sim    EUPL-1.2      see packages/wled-fx-sim/LICENSE
+
+@wiillownet/fastled-math is the FastLED-derived math/color/palette kit
+(FastLED 3.6.0, MIT). @wiillownet/wled-fx-sim contains TypeScript ports of
+WLED's effect implementations (WLED v16.0.0, EUPL-1.2) and depends on the
+math package.
+
+Each package also carries a THIRD-PARTY-LICENSES.md documenting upstream
+provenance in detail (FastLED, WLED, and the cpt-city gradient palettes).
+
+Repository-level files outside packages/ (build configuration, CI, this file)
+are MIT, per packages/fastled-math/LICENSE's terms.
+
+Unofficial. Not affiliated with or endorsed by the WLED/FastLED projects.

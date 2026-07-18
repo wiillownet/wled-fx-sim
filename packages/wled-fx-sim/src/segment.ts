@@ -1,3 +1,7 @@
+// SPDX-License-Identifier: EUPL-1.2
+// Ported from WLED v16.0.0 (commit 4374f01) wled00/FX_fcn.cpp (Segment/SEGENV +
+// packed-color helpers).
+// Copyright (c) 2016-present Christian Schwinne and individual WLED contributors
 /**
  * Lightweight stand-in for WLED's Segment + SEGENV (wled00/FX_fcn.cpp), holding
  * everything a 1D effect body reads/writes across frames: the pixel buffer, the

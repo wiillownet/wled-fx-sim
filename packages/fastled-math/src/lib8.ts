@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Derived from FastLED 3.6.0 (Copyright (c) 2013 FastLED, MIT) as bundled by
+// WLED v16.0.0 (fastled_slim), plus FastLED-marked blocks of wled00/colors.cpp.
 /**
  * FastLED-derived uint8/uint16 fixed-point + color math, ported to TypeScript
  * from FastLED 3.6.0 as bundled by WLED v16.0.0 (wled00/src/dependencies/

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: EUPL-1.2
+// Ported from WLED v16.0.0 (commit 4374f01) wled00/FX_2Dfcn.cpp + FX.h 2D surface.
+// Copyright (c) 2016-present Christian Schwinne and individual WLED contributors
 /**
  * 2D sibling of Segment: a W×H matrix over the same packed-uint32 pixel buffer
  * (row-major, index = x + y*width), with the XY pixel access + 2D drawing

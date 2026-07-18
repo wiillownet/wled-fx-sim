@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: EUPL-1.2
+// Ported from WLED v16.0.0 (commit 4374f01) wled00/FX_fcn.cpp Segment::loadPalette.
+// Copyright (c) 2016-present Christian Schwinne and individual WLED contributors
 /**
  * Palette resolution -- WLED Segment::loadPalette (wled00/FX_fcn.cpp), ported.
  * Palettes 0-5 are built at runtime from the segment's P/S/T colors (dynamic);

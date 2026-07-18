@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: EUPL-1.2
+// WLED-original math ported from WLED v16.0.0 (commit 4374f01) wled00/wled_math.cpp,
+// util.cpp, colors.cpp, prng.h. The FastLED-derived subset lives in
+// @wiillownet/fastled-math (MIT); see PROVENANCE.md for the per-function split.
+// Copyright (c) 2016-present Christian Schwinne and individual WLED contributors
 /**
  * The WLED-original half of the uint8/uint16 fixed-point + color primitive kit
  * WLED effects lean on, ported faithfully from WLED firmware v16.0.0

@@ -142,3 +142,33 @@ palette arrays** and FastLED's built-in palettes from `fastled_slim`
 (47/51 cpt-city or WLED-authored → effects package). The subset has **zero**
 dependency on any EUPL block, so it ships *before* the WLED licensing question
 resolves — the Decision B pilot.
+
+## [2026-07-17] Extraction-time corrections (monorepo spinout)
+
+Verified against `.wled-src/palettes.cpp` (v16.0.0) during the split into
+`@wiillownet/fastled-math` / `@wiillownet/wled-fx-sim`:
+
+1. **Flag 1's sub-buckets were miscounted; flag 3 (fierce_ice) resolves to
+   cpt-city.** The "16 WLED-authored `*_gp`" bucket does not exist as listed:
+   all 16 of those palettes carry explicit cpt-city "originally from"
+   provenance comments in `palettes.cpp` — WLED renamed them (15 are the
+   `bhw1..bhw4` series by cpt-city author "blackheartedwolf"; `fierce_ice` is
+   cpt-city `neota/elem/fierce-ice.c3g`). The corrected split of the baked
+   table (ids 6-71, 66 palettes):
+   - **7 FastLED → MIT** (ids 6-12, incl. the `_gc22` forms; moved to
+     `@wiillownet/fastled-math`),
+   - **47 cpt-city → third-party, per-palette, PENDING LEGAL CONSULT** (the
+     original 31 plus the 16 renamed ones; full id/name/URL table in this
+     package's THIRD-PARTY-LICENSES.md),
+   - **12 WLED-authored → EUPL** (ids 44-53, 55, 71: Orange & Teal, Tiamat,
+     April Night, Orangery, C9, Sakura, Aurora, Atlantica, C9 2, C9 New,
+     Aurora 2, Traffic Light — declared `const byte` with "Custom palette by
+     Aircoookie"-style comments and no cpt-city provenance; the earlier scan
+     missed them because it only matched `const uint8_t` declarations).
+   Routing consequence unchanged: the baked table stays effects-side; only
+   ids 6-12 are MIT-clean and they now live in the math package.
+2. **The `lib8.ts` split is done.** The MIT per-function subset (plus the
+   trivial bit utilities and the 7 FastLED palettes) is physically in
+   `packages/fastled-math/src/`; the WLED-original remainder stays here and
+   re-exports the MIT surface. The math package imports zero EUPL code
+   (enforced by CI).

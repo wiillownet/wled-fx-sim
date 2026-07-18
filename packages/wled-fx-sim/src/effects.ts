@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: EUPL-1.2
+// Ported from WLED v16.0.0 (commit 4374f01) wled00/FX.cpp mode_* bodies.
+// Copyright (c) 2016-present Christian Schwinne and individual WLED contributors
 /**
  * Ported WLED 1D effect bodies (wled00/FX.cpp, tag v16.0.0), keyed by real fx
  * id. Each is a pure function of a Segment's inputs + scratch state, matching

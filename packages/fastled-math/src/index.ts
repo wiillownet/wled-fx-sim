@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Original to this package (no upstream port).
 export * from './lib8.js';
 export * from './palettes.js';
 

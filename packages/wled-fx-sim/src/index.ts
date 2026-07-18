@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: EUPL-1.2
+// Original to this package (no upstream port).
 /**
  * Public surface of the headless WLED effect simulator (decisions.md,
  * 2026-07-03 "Effect previews become real 1D WLED simulations"; 2026-07-17

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: EUPL-1.2
+// Test anchors derived from WLED v16.0.0 behavior; test code original to this package.
 import { describe, expect, it } from 'vitest';
 import {
   createEffectSim,
