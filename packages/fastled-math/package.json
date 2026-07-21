@@ -1,6 +1,6 @@
 {
   "name": "@wiillownet/fastled-math",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "FastLED-derived 8/16-bit fixed-point math, color, and palette kit in TypeScript. Unofficial. Not affiliated with or endorsed by the WLED/FastLED projects.",
   "license": "MIT",
   "type": "module",
