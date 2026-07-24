@@ -26,19 +26,26 @@ WLED's bundled `fastled_slim`. The cleanly separable FastLED-derived subset
 lives in the companion package `@wiillownet/fastled-math`; see that package's
 THIRD-PARTY-LICENSES.md for the full MIT text.
 
-## cpt-city gradient palettes — terms researched per collection, PENDING LEGAL CONSULT
+## cpt-city gradient palettes — terms researched per collection
 
 > **Status (researched 2026-07-17 against the cpt-city archive's own
 > per-collection `COPYING.yaml` records, archive v3.3.2, now hosted at
 > https://phillips.shef.ac.uk/pub/cpt-city/).** The archive's general rule:
 > "The gradients on cpt-city are copyrighted by their authors" and "If the
 > author has not specified a licence then you do not have permission to
-> distribute the gradients." Terms below are per-author. No license is
-> asserted for this data here; group D remains the open item (group B
-> resolved to EUPL-compatible licences -- see below).
-> Mitigating context for all groups: this exact data has been redistributed
-> for years by MIT-licensed FastLED and EUPL-licensed WLED, and a 16-stop
-> color list is thin expression.
+> distribute the gradients." Terms below are per-author. Groups A-C carry
+> explicit or affirmative permission; group D is retained under the
+> documented rationale in that section rather than dropped.
+>
+> **What this package actually ships:** none of the cpt-city gradient files
+> (`.c3g`/`.cpt`) are redistributed. WLED bakes each gradient into its
+> firmware as a 16-entry RGB palette, and this port inherits *that* reduced
+> data — a lossy sampling of the original, not the source gradient. A
+> 16-stop color list is thin expression, and this exact baked data has been
+> redistributed for years by MIT-licensed FastLED and EUPL-licensed WLED.
+> Per-palette provenance (author, collection, "originally from" URL) is
+> preserved throughout so any author can be credited or their palette
+> removed on request.
 
 ### Group A — CC-BY-3.0 (redistributable with attribution)
 
@@ -122,16 +129,29 @@ credit lines.
 | 39 | Autumn | `es_autumn_19_gp` | es | http://seaviewsensing.com/pub/cpt-city/es/autumn/es_autumn_19.c3g |
 | 54 | Temperature | `temperature_gp` | arendal | http://seaviewsensing.com/pub/cpt-city/arendal/temperature.c3g |
 
-### Group D — "free to use" only, NO explicit distribution grant (highest-risk group)
+### Group D — "free to use" only, no explicit distribution statement (retained, see rationale)
 
 `ds` (Diane Simoni), `hult` (Hult), `ing` (Ingerlise), `ma` (Michele
 Albert), `mjf` (Mark J. Fenbers), `neota` (David Gowers): each collection's
-record says only "Free to use" (ds adds "link requested"), with no
-statement about redistribution. Under the archive's own default rule,
-distribution permission is NOT established for these 10 palettes. Options
-if the consult can't clear them: drop them from the baked table (the
-effects still run; the palette ids fall back) or seek per-author
-permission.
+record says "Free to use" (ds adds "link requested"), with no separate
+statement about redistribution. These 10 palettes are **retained**, on the
+following basis:
+
+- This package ships WLED's baked 16-entry samples, not the cpt-city
+  gradient files — a lossy transformation, thin expression, several steps
+  removed from the authors' original works.
+- The identical baked data has shipped inside WLED (EUPL-1.2) and FastLED
+  (MIT) for years; this port carries that existing, long-published data
+  forward rather than introducing a new redistribution of the source.
+- The authors contributed these gradients to a public archive on "free to
+  use" terms, and full attribution (author, collection, source URL) ships
+  with the data.
+
+This is a good-faith reading, not an author-granted redistribution licence.
+Any listed author who prefers otherwise: contact the maintainer and the
+palette will be removed (the effects still run; the palette id falls back).
+A courtesy inquiry to the cpt-city maintainer was sent 2026-07-21; these
+terms will be updated if that reply refines any of the above.
 
 | WLED id | WLED name | cpt-city gradient | collection | originally from |
 | --- | --- | --- | --- | --- |
