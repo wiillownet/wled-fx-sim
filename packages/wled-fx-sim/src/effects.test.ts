@@ -8,6 +8,8 @@ import {
   is2DEffect,
   isPorted,
   portedFxIds,
+  supports1D,
+  supports2D,
   type RGB,
 } from './index.js';
 
@@ -64,6 +66,95 @@ describe('registry surface', () => {
     const oneD = createEffectSim(0, { length: LEN });
     expect(oneD.width).toBe(LEN);
     expect(oneD.height).toBe(1);
+  });
+
+  it('is2DEffect means matrix-only, so a dual id answers false', () => {
+    // 180 Hiphotic has no 1D body; 42 Fireworks has both. Callers asking
+    // is2DEffect() are picking a renderer, and a dual id can render as a strip.
+    expect(is2DEffect(180)).toBe(true);
+    expect(supports1D(180)).toBe(false);
+    expect(is2DEffect(42)).toBe(false);
+    expect(supports1D(42)).toBe(true);
+    expect(supports2D(42)).toBe(true);
+  });
+});
+
+// Dual effects: one WLED mode_* that branches on SEGMENT.is2D(), ported here as
+// two bodies. Firmware routes by the segment's own dimensionality, so selection
+// has to follow what the caller asked for -- never "a 2D body exists, use it",
+// which would strand the 1D body as dead code.
+describe('dual effects run the branch the caller asked for', () => {
+  const DUAL = [42, 43, 65, 79, 82, 90, 99];
+
+  it('every id in DUAL really carries both bodies', () => {
+    for (const id of DUAL) {
+      expect(supports1D(id)).toBe(true);
+      expect(supports2D(id)).toBe(true);
+    }
+  });
+
+  it('defaults to 1D when no matrix dimensions are supplied', () => {
+    for (const id of DUAL) {
+      const sim = createEffectSim(id, { length: LEN });
+      expect(sim.height).toBe(1);
+      expect(sim.width).toBe(LEN);
+      expect(sim.length).toBe(LEN);
+    }
+  });
+
+  it('defaults to 2D once both width and height are supplied', () => {
+    for (const id of DUAL) {
+      const sim = createEffectSim(id, { length: LEN, width: 8, height: 4 });
+      expect(sim.width).toBe(8);
+      expect(sim.height).toBe(4);
+      expect(sim.length).toBe(32);
+    }
+  });
+
+  it('honors an explicit dimensions request over the dimension defaults', () => {
+    for (const id of DUAL) {
+      // Matrix dims present but 1D asked for: the strip body wins.
+      const forced1d = createEffectSim(id, {
+        length: LEN,
+        width: 8,
+        height: 4,
+        dimensions: '1d',
+      });
+      expect(forced1d.height).toBe(1);
+      expect(forced1d.length).toBe(LEN);
+
+      // No matrix dims but 2D asked for: falls back to the 16x16 default.
+      const forced2d = createEffectSim(id, { length: LEN, dimensions: '2d' });
+      expect(forced2d.width).toBe(16);
+      expect(forced2d.height).toBe(16);
+    }
+  });
+
+  it('renders genuinely different pixels per branch', () => {
+    for (const id of DUAL) {
+      const oneD = createEffectSim(id, { length: 64, dimensions: '1d' });
+      const twoD = createEffectSim(id, {
+        length: 64,
+        width: 8,
+        height: 8,
+        dimensions: '2d',
+      });
+      // Same total pixel count, so a mixed-up branch would still be "valid".
+      expect(oneD.length).toBe(twoD.length);
+      expect(oneD.frame(500)).not.toEqual(twoD.frame(500));
+    }
+  });
+
+  it('ignores a dimensions request a single-body effect cannot honor', () => {
+    // 0 Solid is 1D-only, 180 Hiphotic is 2D-only. Neither can switch, and
+    // asking is not an error -- documented fallback, not a silent failure.
+    const solid = createEffectSim(0, { length: LEN, dimensions: '2d' });
+    expect(solid.height).toBe(1);
+    expect(solid.width).toBe(LEN);
+
+    const hiphotic = createEffectSim(180, { length: LEN, dimensions: '1d' });
+    expect(hiphotic.height).toBe(16);
+    expect(hiphotic.width).toBe(16);
   });
 });
 

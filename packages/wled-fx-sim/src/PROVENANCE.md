@@ -48,8 +48,20 @@ package (see plan §5, Decision B: one monorepo, two packages).
 | `particles-1d.ts` | `FXparticleSystem.cpp/.h` 1D engine + PS-1D effects (fx 202-213) | EUPL | **n/a** — no WS2812FX ancestor |
 | `particles-2d.ts` | `FXparticleSystem.cpp/.h` 2D engine + PS-2D effects | EUPL | **n/a** — no WS2812FX ancestor |
 | `effects.ts` | `FX.cpp` `mode_*` bodies (1D + 2D) | EUPL (presumptive) | **per-effect diff pending** for the simple early set only |
+| `audio-fixture.ts` | **none** — sim-original synthetic band-energy stand-in | authored | n/a |
 | `index.ts` | sim-original public surface (no port) | authored | n/a |
 | `sim.bench.ts` | sim-original bench harness | authored | n/a |
+
+`audio-fixture.ts` deserves a note, because the obvious assumption about it is
+wrong. WLED has its own no-audio stand-in, `simulateSound()` (`wled00/util.cpp`),
+and this file does the same job — feeding the audio-reactive `mode_*` bodies a
+`volumeSmth` + 16-band `fftResult` when no analysis exists. It is **not a port of
+it**. It was written from scratch as a canned 120 BPM drum-and-bass phrase (kick,
+snare, hi-hat envelopes plus a bassline contour), which is a different construction
+from any of firmware's four simulation modes and carries more musical structure
+than they do. No upstream lines were consulted or copied, so nothing about it is
+EUPL-encumbered by derivation; it carries the repo's EUPL header for consistency
+with the package it ships inside, exactly as `index.ts` does.
 
 ## `lib8.ts` per-function routing (the critical split)
 

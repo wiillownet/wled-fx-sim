@@ -29,6 +29,41 @@ if (isPorted(89)) {
 2D effects render on a `width`×`height` matrix (row-major buffer; 16×16
 default). `portedFxIds()` lists everything available.
 
+### 1D, 2D, and effects that are both
+
+Most ids render one way: `supports1D(id)` and `supports2D(id)` say which.
+`is2DEffect(id)` is the narrower question — matrix-*only*, no strip body — and is
+the one to ask when picking a renderer.
+
+A handful of WLED `mode_*` bodies branch on `SEGMENT.is2D()` internally and are
+ported here as **both** bodies (Fireworks 42, Rain 43, Palette 65, Ripple 79,
+Halloween Eyes 82, Fireworks 1D 90, Ripple Rainbow 99). Firmware picks by the
+segment's own dimensionality, so for those the caller picks:
+
+```ts
+createEffectSim(42, { length: 60 });                    // strip body
+createEffectSim(42, { length: 60, width: 16, height: 16 }); // matrix body
+createEffectSim(42, { length: 60, width: 16, height: 16, dimensions: '1d' }); // strip, explicitly
+```
+
+Supplying both `width` and `height` selects the 2D body; `dimensions` overrides
+that either way. An id with only one body ignores the request — this package does
+not model firmware expanding a 1D effect across a 2D segment.
+
+### Audio-reactive effects
+
+Nine 2D effects (GEQ 139, Funky Plank 160, Waverly 165, Swirl 175, Akemi 186, and
+PS Spray/GEQ 2D/GEQ Nova/Blobs 197-201) read WLED's audio globals on device. This
+package performs **no audio analysis** — no microphone, no FFT, no beat detection,
+and no way to feed it real audio. It drives those bodies from a built-in synthetic
+fixture instead: a deterministic, looping 4-second 120 BPM drum-and-bass phrase
+standing in for `volumeSmth` and the 16-band `fftResult`.
+
+So they animate, and they animate *plausibly*, but they are reacting to a canned
+pattern rather than to anything you played. Treat those previews as a
+representative look, not a signal path. Frames stay deterministic in `(fxId,
+params, t)` like every other effect here.
+
 ## License: EUPL-1.2
 
 This package is a derivative of WLED and inherits its **EUPL-1.2** license.

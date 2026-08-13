@@ -17,7 +17,10 @@
  * 1D effects render over `length` pixels; 2D effects render over a
  * `width`×`height` matrix (row-major buffer, length = width*height). Matrix
  * dimensions sync to the connected device's 2D setup; 16×16 is the canonical
- * offline default (decisions.md, 2026-07-17).
+ * offline default (decisions.md, 2026-07-17). Some WLED `mode_*` bodies branch
+ * on `SEGMENT.is2D()` internally and are ported here as **both** a 1D and a 2D
+ * body; for those, the caller picks via `params.dimensions` -- see
+ * `EffectSimParams.dimensions`, `supports1D()`, `supports2D()`.
  */
 import { Segment, readBuffer } from './segment.js';
 import { Segment2D } from './segment-2d.js';
@@ -42,6 +45,20 @@ export interface EffectSimParams {
   width?: number;
   /** Matrix height for 2D effects (device height when connected; 16 offline). */
   height?: number;
+  /**
+   * Which body to run for a **dual** effect -- one WLED `mode_*` that branches
+   * on `SEGMENT.is2D()` and so has both a 1D and a 2D port here (Fireworks 42,
+   * Rain 43, Palette 65, Ripple 79, Halloween Eyes 82, Fireworks 1D 90, Ripple
+   * Rainbow 99). Firmware picks by the *segment's own* dimensionality, so this
+   * is the caller's call, not something the registry can answer.
+   *
+   * Default: `'2d'` when both `width` and `height` are supplied (the caller has
+   * said it has a matrix), else `'1d'`. Effects with only one body ignore this
+   * -- a 1D-only id stays 1D even under `'2d'`, because this sim does not model
+   * firmware's expansion of a 1D effect across a 2D segment. Use
+   * `supports1D()` / `supports2D()` to check before asking.
+   */
+  dimensions?: '1d' | '2d';
   /** Speed slider `sx` (0-255). */
   sx?: number;
   /** Intensity slider `ix` (0-255). */
@@ -88,19 +105,43 @@ export function isPorted(fxId: number): boolean {
   return fxId in EFFECT_SIMS || fxId in EFFECT_SIMS_2D;
 }
 
-/** True if `fxId` is simulated on a 2D matrix (its frames are width×height). */
-export function is2DEffect(fxId: number): boolean {
+/** True if `fxId` has a 1D (strip) body. */
+export function supports1D(fxId: number): boolean {
+  return fxId in EFFECT_SIMS;
+}
+
+/** True if `fxId` has a 2D (matrix) body. */
+export function supports2D(fxId: number): boolean {
   return fxId in EFFECT_SIMS_2D;
 }
 
-/** The ported effect ids (1D + 2D), ascending. */
+/**
+ * True if `fxId` can *only* be simulated on a matrix -- it has a 2D body and no
+ * 1D one, so its frames are always width×height whatever the caller asks for.
+ *
+ * Deliberately not "has a 2D body": a **dual** id (both bodies, e.g. Fireworks
+ * 42) answers `false` here, because a caller asking about renderer choice for a
+ * plain strip should get the strip answer. Ask `supports2D()` for the
+ * capability question. Better still, read `width`/`height` off the built
+ * `EffectSim` -- that reports what was actually constructed.
+ */
+export function is2DEffect(fxId: number): boolean {
+  return supports2D(fxId) && !supports1D(fxId);
+}
+
+/**
+ * The ported effect ids (1D + 2D), ascending, deduped. A "dual" id (one WLED
+ * mode_* that branches on is2D(), e.g. Fireworks/Rain/Ripple) is a key in both
+ * EFFECT_SIMS and EFFECT_SIMS_2D at once, so the raw key concat would repeat
+ * it; callers only ever get one entry per id.
+ */
 export function portedFxIds(): number[] {
-  return [...Object.keys(EFFECT_SIMS), ...Object.keys(EFFECT_SIMS_2D)]
+  return [...new Set([...Object.keys(EFFECT_SIMS), ...Object.keys(EFFECT_SIMS_2D)])]
     .map(Number)
     .sort((a, b) => a - b);
 }
 
-/** The 1D effect body for `fxId`, or undefined if unported (2D bodies are internal). */
+/** The 1D effect body for `fxId`, or undefined if it has none (2D bodies are internal). */
 export function getEffectSim(
   fxId: number,
 ): ((seg: Segment) => void) | undefined {
@@ -124,7 +165,14 @@ export function createEffectSim(
     );
   }
 
-  const is2d = !!run2d;
+  // Dual ids carry both bodies; the caller picks, the same way firmware picks by
+  // the segment's own dimensionality rather than by which body exists. Single-body
+  // ids ignore the request -- there is nothing else to run.
+  const wants2d =
+    params.dimensions != null
+      ? params.dimensions === '2d'
+      : params.width != null && params.height != null;
+  const is2d = run2d != null && (run1d == null || wants2d);
   const width = is2d
     ? Math.max(1, (params.width ?? DEFAULT_MATRIX_WIDTH) | 0)
     : Math.max(1, params.length | 0);

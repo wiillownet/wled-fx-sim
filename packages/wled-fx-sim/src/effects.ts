@@ -64,6 +64,7 @@ import {
   type RGB,
 } from './lib8.js';
 import { fillGradient, nblendPaletteTowardPalette } from './palettes.js';
+import { sampleSyntheticAudio } from './audio-fixture.js';
 import {
   initParticleSystem1D,
   getParticleSystem1D,
@@ -9094,11 +9095,1092 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   213: modeParticleFire1D, // "PS Fire 1D"
 };
 
+// --- Dual 1D/2D effects: matrix branches --------------------------------
+// The seven effects below have a single WLED mode_* function whose C++ body
+// branches on SEGMENT.is2D()/strip.isMatrix. Their 1D branch was already
+// ported above (modeFireworks, modeRain, modePalette, modeRipple,
+// modeRippleRainbow, modeHalloweenEyes, modeExplodingFireworks); these are
+// the matching 2D branches, ported into their own functions since this
+// sim's 1D/2D dispatch happens at the registry level, not inside one body.
+
+// --- Fireworks (42), 2D branch ----------------------------------------------
+function mode2DFireworks(seg: Segment2D): void {
+  const width = seg.width;
+  const height = seg.height;
+
+  if (seg.call === 0) {
+    seg.aux0 = 0xffff;
+    seg.aux1 = 0xffff;
+  }
+  seg.fade_out(128);
+
+  const x = seg.aux0 % width;
+  const y = Math.trunc(seg.aux0 / width);
+  if (!seg.step) {
+    const valid1 = seg.aux0 < width * height;
+    const valid2 = seg.aux1 < width * height;
+    let sv1 = 0;
+    let sv2 = 0;
+    // Firmware reads both spark colors from the SAME (x,y) -- derived from
+    // aux0 only, even for the aux1 spark -- preserved as-is (FX.cpp:1307-8).
+    if (valid1) sv1 = seg.getPixelColorXY(x, y);
+    if (valid2) sv2 = seg.getPixelColorXY(x, y);
+    seg.blur(16);
+    if (valid1) seg.setPixelColorXY(x, y, sv1);
+    if (valid2) seg.setPixelColorXY(x, y, sv2);
+  }
+
+  for (let i = 0; i < Math.max(1, Math.trunc(width / 20)); i++) {
+    if (seg.rng.random8(129 - (seg.intensity >> 1)) === 0) {
+      const index = seg.rng.random16(width * height);
+      const ix = index % width;
+      const iy = Math.trunc(index / width);
+      const col = seg.color_from_palette(seg.rng.random8(), false, false, 0);
+      seg.setPixelColorXY(ix, iy, col);
+      seg.aux1 = seg.aux0;
+      seg.aux0 = index;
+    }
+  }
+}
+
+// --- Rain (43), 2D branch ----------------------------------------------------
+function mode2DRain(seg: Segment2D): void {
+  const width = seg.width;
+  const height = seg.height;
+  seg.step += FRAMETIME;
+  const speedFormulaL = 5 + Math.trunc((50 * (255 - seg.speed)) / seg.length);
+  if (seg.call && seg.step > speedFormulaL) {
+    seg.step = 1;
+    seg.move(6, 1, true); // move all pixels down
+    seg.aux0 =
+      (seg.aux0 % width) + (Math.trunc(seg.aux0 / width) + 1) * width;
+    seg.aux1 =
+      (seg.aux1 % width) + (Math.trunc(seg.aux1 / width) + 1) * width;
+    if (seg.aux0 === 0) seg.aux0 = 0xffff;
+    // Firmware sets aux0 (not aux1) on this line too -- the same copy-paste
+    // quirk preserved in the 1D port above (modeRain).
+    if (seg.aux1 === 0) seg.aux0 = 0xffff;
+    if (seg.aux0 >= width * height) seg.aux0 = 0;
+    if (seg.aux1 >= width * height) seg.aux1 = 0;
+  }
+  mode2DFireworks(seg);
+}
+
+// --- Palette (65), 2D branch --------------------------------------------------
+function mode2DPalette(seg: Segment2D): void {
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const inputShift = seg.speed;
+  const inputSize = seg.intensity;
+  const inputRotation = seg.custom1;
+  const inputAnimateShift = seg.check1;
+  const inputAnimateRotation = seg.check2;
+  const inputAssumeSquare = seg.check3;
+
+  const maxAngle = Math.PI / 256;
+  const animatedRotationScale = (2 * Math.PI) / 0xffff;
+
+  const theta = !inputAnimateRotation
+    ? (inputRotation + 128) * maxAngle
+    : ((seg.now * ((inputRotation >> 4) + 1)) & 0xffff) *
+      animatedRotationScale;
+  const sinTheta = sin_approx(theta);
+  const cosTheta = cos_approx(theta);
+
+  const maxX = Math.max(1, cols - 1);
+  const maxY = Math.max(1, rows - 1);
+  const maxXIn = inputAssumeSquare ? maxX : 1;
+  const maxYIn = inputAssumeSquare ? maxY : 1;
+  const maxXOut = !inputAssumeSquare ? maxX : 1;
+  const maxYOut = !inputAssumeSquare ? maxY : 1;
+  const centerX = maxXOut / 2;
+  const centerY = maxYOut / 2;
+  const scale = Math.abs(sinTheta) + (Math.abs(cosTheta) * maxYOut) / maxXOut;
+
+  for (let y = 0; y < rows; y++) {
+    const ytCosTheta = (cosTheta * (y - centerY * maxYIn)) / (maxYIn * scale);
+    for (let x = 0; x < cols; x++) {
+      const xtSinTheta =
+        (sinTheta * (x - centerX * maxXIn)) / (maxXIn * scale);
+      const sourceX = xtSinTheta + ytCosTheta + centerX;
+      let colorIndex = Math.trunc(
+        (Math.min(Math.max(sourceX, 0), maxXOut) * 255) / maxXOut,
+      );
+      if (inputSize <= 128) {
+        colorIndex = Math.trunc((colorIndex * inputSize) / 128);
+      } else {
+        colorIndex = Math.trunc(((inputSize - 112) * colorIndex) / 16);
+      }
+      const paletteOffset = !inputAnimateShift
+        ? inputShift
+        : ((seg.now * ((inputShift >> 3) + 1)) & 0xffff) >> 8;
+      colorIndex -= paletteOffset;
+      seg.setPixelColorXY(x, y, seg.color_wheel(colorIndex & 0xff));
+    }
+  }
+}
+
+// --- Ripple (79) / Ripple Rainbow (99), 2D branch -----------------------------
+// Shared ripple_base 2D path: pos packs (cx<<8)|cy instead of a 1D index, and
+// each drop draws a soft expanding ring (drawCircle) instead of two pixels.
+interface RippleDrop2D {
+  state: number;
+  pos: number;
+  color: number;
+}
+
+const rippleState2D = new WeakMap<Segment2D, RippleDrop2D[]>();
+
+function rippleBase2D(seg: Segment2D, blurAmount = 0): void {
+  const maxRipples = Math.min(1 + (seg.length >> 2), MAX_RIPPLES);
+  let ripples = rippleState2D.get(seg);
+  if (!ripples || ripples.length !== maxRipples) {
+    ripples = Array.from({ length: maxRipples }, () => ({
+      state: 0,
+      pos: 0,
+      color: 0,
+    }));
+    rippleState2D.set(seg, ripples);
+  }
+
+  for (const ripple of ripples) {
+    if (ripple.state) {
+      const rippledecay = (seg.speed >> 4) + 1;
+      const rippleorigin = ripple.pos;
+      const col = seg.color_from_palette(ripple.color, false, false, 255);
+      const propagation =
+        (Math.trunc(ripple.state / rippledecay) - 1) * (seg.speed + 1);
+      const propI = Math.trunc((propagation >> 8) / 2);
+      const propF = propagation & 0xff;
+      const amp =
+        ripple.state < 17
+          ? triwave8(((ripple.state - 1) * 8) & 0xff)
+          : map(ripple.state, 17, 255, 255, 2);
+
+      const cx = rippleorigin >> 8;
+      const cy = rippleorigin & 0xff;
+      const mag = scale8(sin8((propF >> 2) & 0xff), amp);
+      if (propI > 0) {
+        seg.drawCircle(
+          cx,
+          cy,
+          propI,
+          color_blend(seg.getPixelColorXY(cx + propI, cy), col, mag),
+          true,
+        );
+      }
+
+      const next = ripple.state + rippledecay;
+      ripple.state = next > 254 ? 0 : next;
+    } else if (seg.rng.random16(5100 + 10000) <= seg.intensity >> 3) {
+      ripple.state = 1;
+      ripple.pos =
+        ((seg.rng.random8(seg.width) << 8) | seg.rng.random8(seg.height)) >>>
+        0;
+      ripple.color = seg.rng.random8();
+    }
+  }
+
+  seg.blur(blurAmount);
+}
+
+function mode2DRipple(seg: Segment2D): void {
+  if (seg.custom1 || seg.check2) {
+    seg.fade_out(250);
+  } else {
+    seg.fill(seg.color(1));
+  }
+  rippleBase2D(seg, seg.custom1 >> 1);
+}
+
+function mode2DRippleRainbow(seg: Segment2D): void {
+  if (seg.call === 0) {
+    seg.aux0 = seg.rng.random8();
+    seg.aux1 = seg.rng.random8();
+  }
+  if (seg.aux0 === seg.aux1) {
+    seg.aux1 = seg.rng.random8();
+  } else if (seg.aux1 > seg.aux0) {
+    seg.aux0 = (seg.aux0 + 1) & 0xff;
+  } else {
+    seg.aux0 = (seg.aux0 - 1) & 0xff;
+  }
+  seg.fill(color_blend(seg.color_wheel(seg.aux0), BLACK, 235));
+  rippleBase2D(seg);
+}
+
+// --- Halloween Eyes (82), 2D branch -------------------------------------------
+// Firmware reuses SEGMENT.offset to stash the row (a hack noted in FX.cpp's
+// own comment); this sim owns its state struct outright, so the row is just
+// a field on it instead.
+interface EyeData2D {
+  state: number;
+  color: number;
+  startPos: number;
+  row: number;
+  duration: number;
+  startTime: number;
+  blinkEndTime: number;
+}
+
+const eyeDataState2D = new WeakMap<Segment2D, EyeData2D>();
+
+function mode2DHalloweenEyes(seg: Segment2D): void {
+  const maxWidth = seg.width;
+  const eyeSpace = Math.max(2, seg.width >> 4);
+  const eyeWidth = eyeSpace >> 1;
+  const eyeLength = 2 * eyeWidth + eyeSpace;
+  if (eyeLength >= maxWidth) return fallbackStatic(seg);
+
+  let data = eyeDataState2D.get(seg);
+  if (seg.call === 0 || !data) {
+    data = {
+      state: EYE_INIT_ON,
+      color: 0,
+      startPos: 0,
+      row: 0,
+      duration: 0,
+      startTime: 0,
+      blinkEndTime: 0,
+    };
+    eyeDataState2D.set(seg, data);
+  }
+
+  if (!seg.check2) seg.fill(seg.color(1)); // fill background
+
+  data.state = data.state % EYE_STATE_COUNT;
+  let duration = Math.max(1, data.duration);
+  const elapsedTime = seg.now - data.startTime;
+
+  // Same deliberate fallthrough as the 1D port: a freshly (re)initialized
+  // state renders immediately instead of waiting a frame.
+  switch (data.state) {
+    case EYE_INIT_ON: {
+      data.startPos = seg.rng.random16(0, maxWidth - eyeLength - 1);
+      data.color = seg.rng.random8();
+      data.row = seg.rng.random16(0, seg.height - 1);
+      duration = 128 + seg.rng.random16(seg.intensity * 64);
+      data.duration = duration;
+      data.state = EYE_ON;
+    }
+    // falls through
+    case EYE_ON: {
+      const start2ndEye = data.startPos + eyeWidth + eyeSpace;
+      duration = Math.min(duration, 128 + seg.intensity * 64);
+
+      const minimumOnTimeBegin = 1024;
+      const minimumOnTimeEnd = 1024;
+      const fadeInAnimationState = Math.trunc(
+        (elapsedTime * (256 * 8)) / duration,
+      );
+      const backgroundColor = seg.color(1);
+      const eyeColor = seg.color_from_palette(data.color, false, false, 0);
+      let c = eyeColor;
+      if (fadeInAnimationState < 256) {
+        c = color_blend(backgroundColor, eyeColor, fadeInAnimationState & 0xff);
+      } else if (elapsedTime > minimumOnTimeBegin) {
+        const remainingTime =
+          elapsedTime >= duration ? 0 : duration - elapsedTime;
+        if (remainingTime > minimumOnTimeEnd) {
+          if (seg.rng.random8() < 4) {
+            c = backgroundColor;
+            data.state = EYE_BLINK;
+            data.blinkEndTime = seg.now + seg.rng.random8(8, 128);
+          }
+        }
+      }
+
+      if (c !== backgroundColor) {
+        for (let i = 0; i < eyeWidth; i++) {
+          seg.setPixelColorXY(data.startPos + i, data.row, c);
+          seg.setPixelColorXY(start2ndEye + i, data.row, c);
+        }
+      }
+      break;
+    }
+    case EYE_BLINK: {
+      if (seg.now >= data.blinkEndTime) data.state = EYE_ON;
+      break;
+    }
+    case EYE_INIT_OFF: {
+      const eyeOffTimeBase = seg.speed * 128;
+      duration = eyeOffTimeBase + seg.rng.random16(eyeOffTimeBase);
+      data.duration = duration;
+      data.state = EYE_OFF;
+    }
+    // falls through
+    case EYE_OFF: {
+      const eyeOffTimeBase = seg.speed * 128;
+      duration = Math.min(duration, 2 * eyeOffTimeBase);
+      break;
+    }
+    case EYE_STATE_COUNT:
+    default: {
+      data.state = EYE_INIT_ON;
+      break;
+    }
+  }
+
+  if (elapsedTime > duration) {
+    switch (data.state) {
+      case EYE_INIT_ON:
+      case EYE_ON:
+      case EYE_BLINK:
+        data.state = EYE_INIT_OFF;
+        break;
+      case EYE_INIT_OFF:
+      case EYE_OFF:
+      case EYE_STATE_COUNT:
+      default:
+        data.state = EYE_INIT_ON;
+        break;
+    }
+    data.startTime = seg.now;
+  }
+}
+
+// --- Fireworks 1D / "Exploding Fireworks" (90), 2D branch ---------------------
+interface FireworkSpark2D {
+  pos: number;
+  posX: number;
+  vel: number;
+  velX: number;
+  col: number;
+  colIndex: number;
+}
+
+interface FireworksState2D {
+  sparks: FireworkSpark2D[]; // sparks[0] doubles as the flare
+  dyingGravity: number;
+}
+
+const fireworksState2D = new WeakMap<Segment2D, FireworksState2D>();
+
+function mode2DExplodingFireworks(seg: Segment2D): void {
+  const cols = seg.width;
+  const rows = seg.height;
+
+  let state = fireworksState2D.get(seg);
+  if (!state) {
+    // Same simplification as the 1D port: no device-memory spark cap to
+    // reconcile against, so this always uses the uncapped formula.
+    const numSparks = 5 + ((rows * cols) >> 1);
+    state = {
+      sparks: Array.from({ length: numSparks }, () => ({
+        pos: 0,
+        posX: 0,
+        vel: 0,
+        velX: 0,
+        col: 0,
+        colIndex: 0,
+      })),
+      dyingGravity: 0,
+    };
+    seg.aux0 = 0;
+    fireworksState2D.set(seg, state);
+  }
+  const { sparks } = state;
+  const flare = sparks[0];
+
+  seg.fade_out(252);
+
+  const gravity = (-0.0004 - seg.speed / 800000) * rows;
+
+  if (seg.aux0 < 2) {
+    // FLARE
+    if (seg.aux0 === 0) {
+      flare.pos = 0;
+      flare.posX = seg.rng.random16(2, cols - 3);
+      let peakHeight = 75 + seg.rng.random8(180);
+      peakHeight = (peakHeight * (rows - 1)) >> 8;
+      flare.vel = Math.sqrt(-2 * gravity * peakHeight);
+      flare.velX = (seg.rng.random8(9) - 4) / 64;
+      flare.col = 255;
+      seg.aux0 = 1;
+    }
+
+    if (flare.vel > 12 * gravity) {
+      const gray = flare.col & 0xff;
+      seg.setPixelColorXY(
+        Math.trunc(flare.posX),
+        rows - Math.trunc(flare.pos) - 1,
+        rgbw32(gray, gray, gray),
+      );
+      flare.pos += flare.vel;
+      flare.pos = Math.min(Math.max(flare.pos, 0), rows - 1);
+      flare.posX += flare.velX;
+      flare.posX = Math.min(Math.max(flare.posX, 0), cols - 1);
+      flare.vel += gravity;
+      flare.col -= 2;
+    } else {
+      seg.aux0 = 2; // ready to explode
+    }
+  } else if (seg.aux0 < 4) {
+    // Explode! Size proportional to the flare's peak height.
+    let nSparks = Math.trunc(flare.pos) + seg.rng.random8(4);
+    nSparks = Math.max(nSparks, 4);
+    nSparks = Math.min(nSparks, sparks.length);
+
+    if (seg.aux0 === 2) {
+      for (let i = 1; i < nSparks; i++) {
+        sparks[i].pos = flare.pos;
+        sparks[i].posX = flare.posX;
+        sparks[i].vel = seg.rng.random16(20001) / 10000 - 0.9;
+        sparks[i].vel *= rows < 32 ? 0.5 : 1;
+        sparks[i].velX = seg.rng.random16(20001) / 10000 - 1.0;
+        sparks[i].col = 345;
+        sparks[i].colIndex = seg.rng.random8();
+        sparks[i].vel *= flare.pos / rows;
+        sparks[i].velX *= flare.posX / cols;
+        sparks[i].vel *= -gravity * 50;
+      }
+      state.dyingGravity = gravity / 2;
+      seg.aux0 = 3;
+    }
+
+    if (sparks[1].col > 4) {
+      // as long as our known spark is lit, work with all the sparks
+      for (let i = 1; i < nSparks; i++) {
+        sparks[i].pos += sparks[i].vel;
+        sparks[i].posX += sparks[i].velX;
+        sparks[i].vel += state.dyingGravity;
+        sparks[i].velX += state.dyingGravity;
+        if (sparks[i].col > 3) sparks[i].col -= 4;
+
+        if (sparks[i].pos > 0 && sparks[i].pos < rows) {
+          if (!(sparks[i].posX >= 0 && sparks[i].posX < cols)) continue;
+          const prog = sparks[i].col;
+          const spColor = seg.palette
+            ? seg.color_wheel(sparks[i].colIndex)
+            : seg.color(0);
+          let c = BLACK;
+          if (prog > 300) {
+            c = color_blend(spColor, WHITE, ((prog - 300) * 5) & 0xff);
+          } else if (prog > 45) {
+            c = color_blend(BLACK, spColor, (prog - 45) & 0xff);
+            const cooling = (300 - prog) >> 5;
+            c = rgbw32(R(c), qsub8(G(c), cooling), qsub8(B(c), cooling * 2));
+          }
+          seg.setPixelColorXY(
+            Math.trunc(sparks[i].posX),
+            rows - Math.trunc(sparks[i].pos) - 1,
+            c,
+          );
+        }
+      }
+      if (seg.check3) seg.blur(16);
+      state.dyingGravity *= 0.8; // as sparks burn out they fall slower
+    } else {
+      seg.aux0 = 6 + seg.rng.random8(10); // wait this many frames
+    }
+  } else {
+    seg.aux0--;
+    if (seg.aux0 < 4) seg.aux0 = 0; // back to flare
+  }
+}
+
+// --- Audio-reactive 2D effects -------------------------------------------
+// These nine read WLED's audio-reactive globals (volumeSmth / fftResult).
+// There is no real audio analysis in this sim (locked constraint), so every
+// one of them reads sampleSyntheticAudio() (audio-fixture.ts) instead --
+// always the "audio present" branch of the firmware body, since this sim has
+// no concept of "usermod absent" to fall back from. The synthetic fixture
+// has no separate raw/smoothed channel, so anywhere firmware also wants
+// volumeRaw alongside volumeSmth, volumeSmth is reused for both (documented
+// per call site below).
+
+// --- GEQ (139) -----------------------------------------------------------
+const geqBarState = new WeakMap<Segment2D, Uint16Array>();
+
+function mode2DGeq(seg: Segment2D): void {
+  const cols = seg.width;
+  const rows = seg.height;
+  const numBands = map(seg.custom1, 0, 255, 1, 16);
+  const centerBin = map(seg.custom3, 0, 31, 0, 15);
+
+  let previousBarHeight = geqBarState.get(seg);
+  if (!previousBarHeight || previousBarHeight.length !== cols) {
+    previousBarHeight = new Uint16Array(cols);
+    geqBarState.set(seg, previousBarHeight);
+  }
+  if (seg.call === 0) previousBarHeight.fill(0);
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+
+  let rippleTime = false;
+  if (seg.now - seg.step >= 256 - seg.intensity) {
+    seg.step = seg.now;
+    rippleTime = true;
+  }
+
+  const fadeoutDelay = Math.trunc((256 - seg.speed) / 64);
+  if (fadeoutDelay <= 1 || seg.call % fadeoutDelay === 0) {
+    seg.fadeToBlackBy(seg.speed);
+  }
+
+  for (let x = 0; x < cols; x++) {
+    let band = map(x, 0, cols, 0, numBands);
+    if (numBands < 16) {
+      const startBin = Math.min(
+        Math.max(centerBin - (numBands >> 1), 0),
+        15 - numBands + 1,
+      );
+      band =
+        numBands <= 1
+          ? centerBin
+          : map(band, 0, numBands - 1, startBin, startBin + numBands - 1);
+    }
+    band = Math.min(Math.max(band, 0), 15);
+    let colorIndex = band * 17;
+    const barHeight = map(fftResult[band], 0, 255, 0, rows); // rows, not rows-1
+    if (barHeight > previousBarHeight[x]) previousBarHeight[x] = barHeight;
+
+    // PALETTE_SOLID_WRAP is (paletteBlend==1||==3); this sim fixes
+    // paletteBlend at 0 (segment.ts), so it's always false here.
+    let ledColor = BLACK;
+    for (let y = 0; y < barHeight; y++) {
+      if (seg.check1) colorIndex = map(y, 0, rows - 1, 0, 255);
+      ledColor = seg.color_from_palette(colorIndex, false, false, 0);
+      seg.setPixelColorXY(x, rows - 1 - y, ledColor);
+    }
+    if (previousBarHeight[x] > 0) {
+      seg.setPixelColorXY(
+        x,
+        rows - previousBarHeight[x],
+        seg.color(2) !== BLACK ? seg.color(2) : ledColor,
+      );
+    }
+    if (rippleTime && previousBarHeight[x] > 0) previousBarHeight[x]--;
+  }
+}
+
+// --- Funky Plank (160) -----------------------------------------------------
+function mode2DFunkyPlank(seg: Segment2D): void {
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const numBands = map(seg.custom1, 0, 255, 1, 16);
+  let barWidth = Math.trunc(cols / numBands);
+  let bandInc = 1;
+  if (barWidth === 0) {
+    barWidth = 1;
+    bandInc = Math.trunc(numBands / cols);
+  }
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  // Firmware reads a hardware microsecond clock (micros()); this sim only
+  // has millisecond time, so ms*1000 substitutes for it. The original's
+  // `+1 % 64` is a precedence quirk (% binds tighter than the outer +, so it
+  // reduces to `+1`) -- preserved as-is rather than "fixed".
+  const usNow = seg.now * 1000;
+  const secondHand =
+    (Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) + 1) & 0xff;
+  if (seg.aux0 !== secondHand) {
+    seg.aux0 = secondHand;
+
+    let b = 0;
+    for (let band = 0; band < numBands; band += bandInc, b++) {
+      const hue = fftResult[band % 16];
+      const v = map(fftResult[band % 16], 0, 255, 10, 255);
+      const color = hsv2rgb_rainbow((hue & 0xff) << 8, 255, v);
+      for (let w = 0; w < barWidth; w++) {
+        const xpos = barWidth * b + w;
+        seg.setPixelColorXY(xpos, 0, color);
+      }
+    }
+
+    for (let i = rows - 1; i > 0; i--) {
+      for (let j = cols - 1; j >= 0; j--) {
+        seg.setPixelColorXY(j, i, seg.getPixelColorXY(j, i - 1));
+      }
+    }
+  }
+}
+
+// --- Swirl (175) -------------------------------------------------------------
+function mode2DSwirl(seg: Segment2D): void {
+  const cols = seg.width;
+  const rows = seg.height;
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const borderWidth = 2;
+  seg.blur(seg.custom1);
+
+  const i = beatsin8_t(
+    Math.trunc((27 * seg.speed) / 255),
+    seg.now,
+    borderWidth,
+    cols - borderWidth,
+  );
+  const j = beatsin8_t(
+    Math.trunc((41 * seg.speed) / 255),
+    seg.now,
+    borderWidth,
+    rows - borderWidth,
+  );
+  const ni = cols - 1 - i;
+  // Firmware quirk: nj is also derived from `cols`, not `rows`, even though
+  // j is a row coordinate -- only symmetric on a square matrix. Preserved.
+  const nj = cols - 1 - j;
+
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+  const volumeRaw = volumeSmth; // no separate raw/smoothed channel in the fixture
+
+  const tap = (x: number, y: number, divisor: number): void => {
+    const index = (Math.trunc(seg.now / divisor) + volumeSmth * 4) & 0xff;
+    const bri = (Math.trunc((volumeRaw * seg.intensity) / 64)) & 0xff;
+    const col = colorFromPalette(
+      seg.getCurrentPalette(),
+      index,
+      bri,
+      LINEARBLEND,
+    );
+    seg.addPixelColorXY(x, y, col);
+  };
+  tap(i, j, 11);
+  tap(j, i, 13);
+  tap(ni, nj, 17);
+  tap(nj, ni, 29);
+  tap(i, nj, 37);
+  tap(ni, j, 41);
+}
+
+// --- Waverly (165) -----------------------------------------------------------
+function mode2DWaverly(seg: Segment2D): void {
+  const cols = seg.width;
+  const rows = seg.height;
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+
+  seg.fadeToBlackBy(seg.speed);
+
+  const t = Math.trunc(seg.now / 2);
+  for (let i = 0; i < cols; i++) {
+    let thisVal = Math.trunc(
+      ((1 + (seg.intensity >> 6)) * perlin8(i * 45, t, t)) / 2,
+    );
+    // "use audio if available" -- always true in this sim.
+    thisVal = Math.trunc(thisVal / 32);
+    thisVal = Math.trunc(thisVal * volumeSmth);
+    const thisMax = map(thisVal, 0, 512, 0, rows);
+
+    for (let j = 0; j < thisMax; j++) {
+      const idx = map(j, 0, thisMax, 250, 0);
+      const col = colorFromPalette(
+        seg.getCurrentPalette(),
+        idx,
+        255,
+        LINEARBLEND,
+      );
+      seg.addPixelColorXY(i, j, col);
+      seg.addPixelColorXY(cols - 1 - i, rows - 1 - j, col);
+    }
+  }
+  if (seg.check3) seg.blur(16, cols * rows < 100);
+}
+
+// --- Akemi (186) ---------------------------------------------------------
+// 32x32 category bitmap (0=bg,1/2/3=arms&legs dark/normal/light,4/5/6=face
+// dark/normal/light,7=eyes&mouth,8=sound-reactive accent), transcribed
+// verbatim from FX.cpp's `akemi[]` (wled00/FX.cpp).
+// prettier-ignore
+const AKEMI_BITMAP = new Uint8Array([
+  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,2,2,3,3,3,3,3,3,2,2,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,2,3,3,0,0,0,0,0,0,3,3,2,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,2,3,0,0,0,6,5,5,4,0,0,0,3,2,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,2,3,0,0,6,6,5,5,5,5,4,4,0,0,3,2,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,2,3,0,6,5,5,5,5,5,5,5,5,4,0,3,2,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,2,3,0,6,5,5,5,5,5,5,5,5,5,5,4,0,3,2,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,3,2,0,6,5,5,5,5,5,5,5,5,5,5,4,0,2,3,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,3,2,3,6,5,5,7,7,5,5,5,5,7,7,5,5,4,3,2,3,0,0,0,0,0,0,
+  0,0,0,0,0,2,3,1,3,6,5,1,7,7,7,5,5,1,7,7,7,5,4,3,1,3,2,0,0,0,0,0,
+  0,0,0,0,0,8,3,1,3,6,5,1,7,7,7,5,5,1,7,7,7,5,4,3,1,3,8,0,0,0,0,0,
+  0,0,0,0,0,8,3,1,3,6,5,5,1,1,5,5,5,5,1,1,5,5,4,3,1,3,8,0,0,0,0,0,
+  0,0,0,0,0,2,3,1,3,6,5,5,5,5,5,5,5,5,5,5,5,5,4,3,1,3,2,0,0,0,0,0,
+  0,0,0,0,0,0,3,2,3,6,5,5,5,5,5,5,5,5,5,5,5,5,4,3,2,3,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,6,5,5,5,5,5,7,7,5,5,5,5,5,4,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,6,5,5,5,5,5,5,5,5,5,5,5,5,4,0,0,0,0,0,0,0,0,0,
+  1,0,0,0,0,0,0,0,0,6,5,5,5,5,5,5,5,5,5,5,5,5,4,0,0,0,0,0,0,0,0,2,
+  0,2,2,2,0,0,0,0,0,6,5,5,5,5,5,5,5,5,5,5,5,5,4,0,0,0,0,0,2,2,2,0,
+  0,0,0,3,2,0,0,0,6,5,4,4,4,4,4,4,4,4,4,4,4,4,4,4,0,0,0,2,2,0,0,0,
+  0,0,0,3,2,0,0,0,6,5,5,5,5,5,5,5,5,5,5,5,5,5,5,4,0,0,0,2,3,0,0,0,
+  0,0,0,0,3,2,0,0,0,0,3,3,0,3,3,0,0,3,3,0,3,3,0,0,0,0,2,2,0,0,0,0,
+  0,0,0,0,3,2,0,0,0,0,3,2,0,3,2,0,0,3,2,0,3,2,0,0,0,0,2,3,0,0,0,0,
+  0,0,0,0,0,3,2,0,0,3,2,0,0,3,2,0,0,3,2,0,0,3,2,0,0,2,3,0,0,0,0,0,
+  0,0,0,0,0,3,2,2,2,2,0,0,0,3,2,0,0,3,2,0,0,0,3,2,2,2,3,0,0,0,0,0,
+  0,0,0,0,0,0,3,3,3,0,0,0,0,3,2,0,0,3,2,0,0,0,0,3,3,3,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,3,2,0,0,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,3,2,0,0,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,3,2,0,0,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,3,2,0,0,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+  0,0,0,0,0,0,0,0,0,0,0,0,0,3,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+]);
+
+const AKEMI_ORANGE = rgbw32(255, 165, 0); // CRGB::Orange
+const AKEMI_DEFAULT_ARMS = rgbw32(0xff, 0xe0, 0xa0); // warmish white default
+
+function scaleColorFloat(c: number, factor: number): number {
+  return rgbw32(
+    Math.min(255, Math.round(R(c) * factor)),
+    Math.min(255, Math.round(G(c) * factor)),
+    Math.min(255, Math.round(B(c) * factor)),
+  );
+}
+
+function mode2DAkemi(seg: Segment2D): void {
+  const cols = seg.width;
+  const rows = seg.height;
+
+  const counter = (Math.trunc(seg.now * ((seg.speed >> 2) + 2)) & 0xffff) >> 8;
+
+  const lightFactor = 0.15;
+  const normalFactor = 0.4;
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+  const base = fftResult[0] / 255;
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const faceColor = seg.color_wheel(counter & 0xff);
+      const armsAndLegsBase =
+        seg.color(1) > 0 ? seg.color(1) : AKEMI_DEFAULT_ARMS;
+      let color = BLACK;
+      const ak =
+        AKEMI_BITMAP[
+          Math.trunc((y * 32) / rows) * 32 + Math.trunc((x * 32) / cols)
+        ];
+      switch (ak) {
+        case 3:
+          color = scaleColorFloat(armsAndLegsBase, lightFactor);
+          break;
+        case 2:
+          color = scaleColorFloat(armsAndLegsBase, normalFactor);
+          break;
+        case 1:
+          color = armsAndLegsBase;
+          break;
+        case 6:
+          color = scaleColorFloat(faceColor, lightFactor);
+          break;
+        case 5:
+          color = scaleColorFloat(faceColor, normalFactor);
+          break;
+        case 4:
+          color = faceColor;
+          break;
+        case 7:
+          color = seg.color(2) > 0 ? seg.color(2) : WHITE;
+          break;
+        case 8:
+          color =
+            base > 0.4
+              ? scaleColorFloat(AKEMI_ORANGE, base)
+              : armsAndLegsBase;
+          break;
+        default:
+          color = BLACK;
+          break;
+      }
+
+      if (seg.intensity > 128 && fftResult[0] > 128) {
+        seg.setPixelColorXY(x, 0, BLACK);
+        seg.setPixelColorXY(x, y + 1, color);
+      } else {
+        seg.setPixelColorXY(x, y, color);
+      }
+    }
+  }
+
+  const xMax = Math.trunc(cols / 8);
+  for (let x = 0; x < xMax; x++) {
+    let band = map(x, 0, Math.max(xMax, 4), 0, 15);
+    band = Math.min(Math.max(band, 0), 15);
+    const barHeight = map(fftResult[band], 0, 255, 0, Math.trunc((17 * rows) / 32));
+    const color = seg.color_from_palette(band * 35, false, false, 0);
+    for (let y = 0; y < barHeight; y++) {
+      seg.setPixelColorXY(x, Math.trunc(rows / 2) - y, color);
+      seg.setPixelColorXY(cols - 1 - x, Math.trunc(rows / 2) - y, color);
+    }
+  }
+}
+
+// --- PS Spray (197) --------------------------------------------------------
+function modeParticleSpray2D(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  const hardness = 200;
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 1);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.setBounceY(true);
+    ps.setMotionBlur(200);
+    ps.setSmearBlur(10);
+    ps.sources[0].source.hue = seg.rng.random16();
+    ps.sources[0].sourceFlags.collide = true;
+    ps.sources[0].var = 3;
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setBounceX(!seg.check2);
+  ps.setWrapX(seg.check2);
+  ps.setWallHardness(hardness);
+  ps.setGravity(seg.check1 ? 8 : 0);
+  if (seg.check3) ps.enableParticleCollisions(true, hardness);
+  else ps.enableParticleCollisions(false);
+
+  ps.sources[0].source.x = map(seg.custom1, 0, 255, 0, ps.maxX);
+  ps.sources[0].source.y = map(seg.custom2, 0, 255, 0, ps.maxY);
+  const angle = (256 - ((seg.custom3 + 1) << 3)) << 8;
+
+  // Firmware branches on whether the real AudioReactive usermod is present;
+  // this sim has no such usermod, so it always takes the "AR data present"
+  // branch, fed by the synthetic fixture instead.
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+  const volumeRaw = volumeSmth;
+  ps.sources[0].minLife = 30;
+
+  if (
+    seg.call % 20 === 0 ||
+    seg.call % (11 - Math.trunc(volumeSmth / 25)) === 0
+  ) {
+    ps.sources[0].maxLife = (volumeSmth >> 1) + (seg.intensity >> 1);
+    ps.sources[0].var = 1 + ((volumeRaw * seg.speed) >> 12);
+    const emitspeed = (seg.speed >> 2) + (volumeRaw >> 3);
+    ps.sources[0].source.hue =
+      (ps.sources[0].source.hue + Math.trunc(volumeSmth / 30)) & 0xff;
+    ps.angleEmit(ps.sources[0], angle, emitspeed);
+  }
+
+  ps.update();
+}
+
+// --- PS GEQ 2D (198) -------------------------------------------------------
+function modeParticleGeq2D(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 1);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.setUsedParticles(170);
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setWrapX(seg.check1);
+  ps.setBounceX(seg.check2);
+  ps.setBounceY(seg.check3);
+  ps.setWallHardness(seg.custom2);
+  ps.setGravity(seg.custom3 << 2);
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+
+  let i = 0;
+  const binwidth = (ps.maxX + 1) >> 4;
+  const threshold = 300 - seg.intensity;
+
+  for (let bin = 0; bin < 16; bin++) {
+    const xposition = binwidth * bin + (binwidth >> 1);
+    const emitspeed = (fftResult[bin] * seg.speed) >> 9;
+    let emitparticles = 0;
+
+    if (fftResult[bin] > threshold) {
+      emitparticles = 1;
+    } else if (fftResult[bin] > 0) {
+      const restvolume = ((threshold - fftResult[bin]) >> 2) + 2;
+      if (seg.rng.random16() % restvolume === 0) emitparticles = 1;
+    }
+
+    while (i < ps.usedParticles && emitparticles > 0) {
+      if (ps.particles[i].ttl === 0) {
+        ps.particles[i].ttl =
+          20 +
+          map(
+            seg.intensity,
+            0,
+            255,
+            emitspeed >> 1,
+            emitspeed + seg.rng.random16(emitspeed),
+          );
+        ps.particles[i].x =
+          xposition + seg.rng.random16(binwidth) - (binwidth >> 1);
+        ps.particles[i].y = 0;
+        ps.particles[i].vx =
+          seg.rng.random16(seg.custom1 >> 1) - (seg.custom1 >> 2);
+        ps.particles[i].vy = emitspeed;
+        ps.particles[i].hue = (bin << 4) + seg.rng.random16(17) - 8;
+        emitparticles--;
+      }
+      i++;
+    }
+  }
+
+  ps.update();
+}
+
+// --- PS GEQ Nova (199) -----------------------------------------------------
+const NOVA_SOURCES = 16;
+
+function modeParticleGeqNova2D(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  let numSprays: number;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, NOVA_SOURCES);
+    if (!ps) return fallbackStatic(seg);
+    numSprays = Math.min(ps.numSources, NOVA_SOURCES);
+    for (let i = 0; i < numSprays; i++) {
+      ps.sources[i].source.x = (ps.maxX + 1) >> 1;
+      ps.sources[i].source.y = (ps.maxY + 1) >> 1;
+      ps.sources[i].source.hue = i * 16;
+      ps.sources[i].maxLife = 400;
+      ps.sources[i].minLife = 200;
+    }
+    ps.setKillOutOfBounds(true);
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  numSprays = Math.min(ps.numSources, NOVA_SOURCES);
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+  const threshold = 300 - seg.intensity;
+
+  if (seg.check2) seg.aux0 = (seg.aux0 + (seg.custom1 << 2)) & 0xffff;
+  else seg.aux0 = (seg.aux0 - (seg.custom1 << 2)) & 0xffff;
+
+  const angleoffset = Math.trunc(0xffff / numSprays);
+  let j = seg.rng.random16(numSprays);
+  for (let i = 0; i < numSprays; i++) {
+    if (seg.custom2 > 0 && seg.call % (32 - (seg.custom2 >> 3)) === 0) {
+      ps.sources[j].source.hue =
+        (ps.sources[j].source.hue + 1 + (seg.custom2 >> 4)) & 0xff;
+    }
+
+    ps.sources[j].var = seg.custom3 >> 2;
+    const emitspeed = 5 + ((fftResult[j] * (seg.speed + 20)) >> 10);
+    const emitangle = (j * angleoffset + seg.aux0) & 0xffff;
+
+    let emitparticles = 0;
+    if (fftResult[j] > threshold) {
+      emitparticles = 1;
+    } else if (fftResult[j] > 0) {
+      const restvolume = ((threshold - fftResult[j]) >> 2) + 2;
+      if (seg.rng.random16() % restvolume === 0) emitparticles = 1;
+    }
+    if (emitparticles) ps.angleEmit(ps.sources[j], emitangle, emitspeed);
+
+    j = (j + 1) % numSprays;
+  }
+
+  ps.update();
+}
+
+// --- PS Blobs (201) --------------------------------------------------------
+function modeParticleBlobs2D(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
+  let ps: ParticleSystem2D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem2D(seg, 0, true, true); // advanced + size control
+    if (!ps) return fallbackStatic(seg);
+    ps.setBounceX(true);
+    ps.setBounceY(true);
+    ps.setWallHardness(255);
+    ps.setWallRoughness(255);
+    ps.setCollisionHardness(255);
+    ps.perParticleSize = true;
+  } else {
+    ps = getParticleSystem2D(seg);
+  }
+  if (!ps) return fallbackStatic(seg);
+
+  ps.updateSystem();
+  ps.setUsedParticles(map(seg.intensity, 0, 255, 25, 128));
+  ps.enableParticleCollisions(seg.check2);
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    const p = ps.particles[i];
+    if (seg.aux0 !== seg.speed || p.ttl === 0) {
+      p.vx = seg.rng.random16(seg.speed >> 1) - (seg.speed >> 2);
+      p.vy = seg.rng.random16(seg.speed >> 1) - (seg.speed >> 2);
+    }
+    if (ps.advPartSize && (seg.aux1 !== seg.custom1 || p.ttl === 0)) {
+      ps.advPartSize[i].maxsize =
+        60 + (seg.custom1 >> 1) + seg.rng.random16(seg.custom1 >> 2);
+    }
+
+    if (p.ttl === 0) {
+      p.ttl = 300 + seg.rng.random16((seg.custom2 << 3) + 100);
+      // hw_random() has no direct counterpart (32-bit, vs. this PRNG's
+      // random16); maxX/maxY comfortably fit 16 bits, so random16 substitutes.
+      p.x = seg.rng.random16(ps.maxX);
+      p.y = seg.rng.random16(ps.maxY);
+      p.hue = seg.rng.random16() & 0xff;
+      ps.particleFlags[i].collide = true;
+      if (ps.advPartProps) ps.advPartProps[i].size = 0;
+      if (ps.advPartSize) {
+        ps.advPartSize[i].asymmetry = seg.rng.random16(220);
+        ps.advPartSize[i].asymdir = seg.rng.random16(255);
+        ps.advPartSize[i].grow = true;
+        ps.advPartSize[i].growspeed = 1 + seg.rng.random16(9);
+        ps.advPartSize[i].shrinkspeed = 1 + seg.rng.random16(9);
+        ps.advPartSize[i].wobblespeed = 1 + seg.rng.random16(3);
+      }
+    }
+    if (ps.advPartSize) {
+      ps.advPartSize[i].pulsate = seg.check3;
+      ps.advPartSize[i].wobble = seg.check1;
+    }
+  }
+  seg.aux0 = seg.speed;
+  seg.aux1 = seg.custom1;
+
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+  if (seg.check3 && ps.advPartProps) {
+    for (let i = 0; i < ps.usedParticles; i++) {
+      ps.advPartProps[i].size = volumeSmth;
+    }
+  }
+
+  ps.setMotionBlur((seg.custom3 << 3) + 7);
+  ps.update();
+}
+
 /**
  * The 2D effect bodies, keyed by real fx id. Same contract as EFFECT_SIMS but
  * over a Segment2D matrix; the sim wrapper picks the registry by id.
  */
 export const EFFECT_SIMS_2D: Record<number, (seg: Segment2D) => void> = {
+  42: mode2DFireworks,
+  43: mode2DRain,
+  65: mode2DPalette,
+  79: mode2DRipple,
+  82: mode2DHalloweenEyes,
+  90: mode2DExplodingFireworks, // "Fireworks 1D"
+  99: mode2DRippleRainbow,
+  139: mode2DGeq, // "GEQ"
+  160: mode2DFunkyPlank, // "Funky Plank"
+  165: mode2DWaverly, // "Waverly"
+  175: mode2DSwirl, // "Swirl"
+  186: mode2DAkemi, // "Akemi"
+  197: modeParticleSpray2D, // "PS Spray"
+  198: modeParticleGeq2D, // "PS GEQ 2D"
+  199: modeParticleGeqNova2D, // "PS GEQ Nova"
+  201: modeParticleBlobs2D, // "PS Blobs"
   114: mode2DPlasmaRotozoom, // "Rotozoomer"
   118: mode2DSpaceships,
   119: mode2DCrazyBees,
