@@ -27,8 +27,11 @@ because WLED is. The boundary is enforced in CI: `fastled-math` importing
 anything from `wled-fx-sim` fails the build.
 
 Baked gradient-palette data originating from the cpt-city archive is
-documented separately in `packages/wled-fx-sim/THIRD-PARTY-LICENSES.md` and
-is pending per-palette license confirmation.
+documented separately in `packages/wled-fx-sim/THIRD-PARTY-LICENSES.md`,
+with terms researched per collection: 37 of the 47 palettes carry cited
+licenses (CC-BY-3.0, EUPL-compatible copyleft, or an author's informal
+grant), and the remaining 10 are retained under the good-faith rationale
+documented in that file.
 
 ## Development
 

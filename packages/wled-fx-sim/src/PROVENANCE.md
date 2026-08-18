@@ -33,7 +33,7 @@ package (see plan §5, Decision B: one monorepo, two packages).
 | `wled00/wled_math.cpp` | wled-dev/WLED | **EUPL-1.2** | WLED-original integer trig (replaced FastLED's) |
 | `wled00/util.cpp` | wled-dev/WLED | **mixed** | beat/beatsin FastLED-lineage, perlin WLED-original — see below |
 | `wled00/prng.h` | wled-dev/WLED | **EUPL-1.2** | WLED-original 16-bit PRNG |
-| cpt-city gradient palettes | seaviewsensing.com/pub/cpt-city (via FastLED/WLED) | **third-party, per-palette** | 31 of the baked palettes; "originally from" c3g source; NEW bucket — see flag 1 |
+| cpt-city gradient palettes | seaviewsensing.com/pub/cpt-city (via FastLED/WLED) | **third-party, per-palette** | 47 of the baked palettes; "originally from" c3g source; NEW bucket — see flag 1 |
 | kitesurfer1404/WS2812FX (2016) | separate repo | **MIT** | ancestor only for the simplest early 1D effects; per-effect diff, not assumed |
 
 ## Per sim-file blocks
@@ -44,7 +44,7 @@ package (see plan §5, Decision B: one monorepo, two packages).
 | `segment.ts` | `FX_fcn.cpp` Segment/SEGENV + packed-color helpers | EUPL | n/a |
 | `segment-2d.ts` | `FX_2Dfcn.cpp` (blur2D/move/wu_pixel/setPixelColorXY) + `FX.h` 2D surface | EUPL | n/a (WS2812FX is 1D-only) |
 | `palettes.ts` | `FX_fcn.cpp` `Segment::loadPalette` | EUPL | n/a |
-| `palette-data.generated.ts` | `palettes.cpp` baked table (ids 6-71) | **three-way** — 4 MIT / 31 cpt-city / 16 EUPL (resolved, see flag 1) | n/a |
+| `palette-data.generated.ts` | `palettes.cpp` baked table (ids 6-71) | **three-way** — 7 MIT / 47 cpt-city / 12 EUPL (corrected, see flag 1) | n/a |
 | `particles-1d.ts` | `FXparticleSystem.cpp/.h` 1D engine + PS-1D effects (fx 202-213) | EUPL | **n/a** — no WS2812FX ancestor |
 | `particles-2d.ts` | `FXparticleSystem.cpp/.h` 2D engine + PS-2D effects | EUPL | **n/a** — no WS2812FX ancestor |
 | `particles-common.ts` | `FXparticleSystem.cpp/.h` physics helpers shared by both engines (`limitSpeed`, `calcForce_dv`, `checkBoundsAndWrap`) | EUPL | **n/a** — no WS2812FX ancestor |
@@ -101,7 +101,15 @@ uncopyrightable packing helpers — safe in either package; keep with the MIT ki
 
 1. **`palette-data.generated.ts` — per-palette split. RESOLVED, with a new
    cpt-city bucket the plan didn't anticipate.** The baked table (ids 6-71) is
-   three-way, not two:
+   three-way, not two.
+
+   > **Superseded in part.** The sub-bucket counts below (4/31/16) were
+   > miscounted; the corrected split is 7 MIT / 47 cpt-city / 12 EUPL — see
+   > "Extraction-time corrections" below. The "legal-consult item" noted here
+   > was since discharged by the per-collection terms research in the
+   > 2026-07-17 section and in THIRD-PARTY-LICENSES.md. The original wording is
+   > kept for the record.
+
    - **4 FastLED-named → MIT:** `CloudColors`, `LavaColors`, `OceanColors`,
      `ForestColors` (`palettes.cpp` header line 15: "imported from FastLED @ 3.6.0
      ... MIT"). Plus FastLED built-ins defined in `fastled_slim` itself
@@ -171,9 +179,10 @@ Verified against `.wled-src/palettes.cpp` (v16.0.0) during the split into
    table (ids 6-71, 66 palettes):
    - **7 FastLED → MIT** (ids 6-12, incl. the `_gc22` forms; moved to
      `@wiillownet/fastled-math`),
-   - **47 cpt-city → third-party, per-palette, PENDING LEGAL CONSULT** (the
-     original 31 plus the 16 renamed ones; full id/name/URL table in this
-     package's THIRD-PARTY-LICENSES.md),
+   - **47 cpt-city → third-party, per-palette** (the original 31 plus the 16
+     renamed ones; full id/name/URL table in this package's
+     THIRD-PARTY-LICENSES.md). Terms were subsequently researched per
+     collection — see the 2026-07-17 section below,
    - **12 WLED-authored → EUPL** (ids 44-53, 55, 71: Orange & Teal, Tiamat,
      April Night, Orangery, C9, Sakura, Aurora, Atlantica, C9 2, C9 New,
      Aurora 2, Traffic Light — declared `const byte` with "Custom palette by

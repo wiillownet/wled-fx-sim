@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: EUPL-1.2
 // Palette DATA provenance is three-way: ids 6-12 FastLED/MIT (imported from
-// @wiillownet/fastled-math), 47 palettes cpt-city (see THIRD-PARTY-LICENSES.md,
-// PENDING LEGAL CONSULT -- no license asserted for that data here), 12 palettes
-// WLED-authored/EUPL. See PROVENANCE.md.
+// @wiillownet/fastled-math), 47 palettes cpt-city (terms researched per
+// collection in THIRD-PARTY-LICENSES.md: 37 with cited licenses, 10 retained
+// under a documented rationale), 12 palettes WLED-authored/EUPL. See
+// PROVENANCE.md.
 /**
  * Baked WLED fixed-palette table (ids 6-71) -- GENERATED, do not hand-edit.
  * Source: WLED firmware tag v16.0.0 (wled00/palettes.cpp,
