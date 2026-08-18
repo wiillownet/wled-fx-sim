@@ -293,6 +293,59 @@ describe('spot checks against known behavior', () => {
     expect(sawDark).toBe(true);
   });
 
+  // 83/84/85 are legitimately static, so they sit out the "differs over time"
+  // sweep above; without these three they would have no pixel-content coverage
+  // at all and could be blanked to black without failing a single test.
+  it('Solid Pattern (83) alternates lit/unlit runs at the configured lengths', () => {
+    // sx=3 -> 4 lit, ix=1 -> 2 unlit; unlit pixels are color(1) = black
+    const sim = createEffectSim(83, {
+      length: LEN,
+      sx: 3,
+      ix: 1,
+      pal: 11,
+      colors: [RED, BLACK_RGB, BLUE],
+    });
+    const buf = sim.frame(0);
+    const lit = buf.map((px) => px[0] + px[1] + px[2] > 0);
+    // period is 4 lit + 2 unlit
+    for (let i = 0; i < LEN; i++) {
+      expect(lit[i]).toBe(i % 6 < 4);
+    }
+  });
+
+  it('Solid Pattern Tri (84) lays down its three colors in equal runs', () => {
+    // ix=0 -> segSize 1, so the P/S/T colors cycle one pixel at a time
+    const sim = createEffectSim(84, {
+      length: LEN,
+      ix: 0,
+      colors: [RED, GREEN, BLUE],
+    });
+    const buf = sim.frame(0);
+    const want = [RED, GREEN, BLUE];
+    for (let i = 0; i < LEN; i++) {
+      expect(buf[i]).toEqual(want[i % 3]);
+    }
+    expect(new Set(buf.map((px) => px.join(','))).size).toBe(3);
+  });
+
+  it('Spots (85) draws the expected number of lit zones', () => {
+    // maxZones = 30>>2 = 7; ix=255 -> zones = 1 + ((255*7)>>8) = 7
+    const sim = createEffectSim(85, {
+      length: LEN,
+      sx: 128,
+      ix: 255,
+      pal: 11,
+      colors: [RED, BLACK_RGB, BLUE],
+    });
+    const buf = sim.frame(0);
+    const lit = buf.map((px) => px[0] + px[1] + px[2] > 0);
+    expect(lit.some(Boolean)).toBe(true);
+    // count runs of lit pixels
+    let runs = 0;
+    for (let i = 0; i < LEN; i++) if (lit[i] && !lit[i - 1]) runs++;
+    expect(runs).toBe(7);
+  });
+
   it('Rainbow (9) shows multiple distinct hues across the strip', () => {
     const sim = createEffectSim(9, { length: LEN, sx: 128, ix: 200 });
     const buf = sim.frame(100);
