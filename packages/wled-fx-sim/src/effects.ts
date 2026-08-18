@@ -6332,7 +6332,8 @@ function mode2DDrift(seg: Segment2D): void {
   const rowsCenter = (rows >> 1) + (rows % 2);
 
   seg.fadeToBlackBy(128);
-  const maxDim = Math.max(cols, rows) / 2;
+  // MAX() on two ints upstream, so the /2 truncates before the float assign
+  const maxDim = Math.max(cols, rows) >> 1;
   const t = Math.trunc(seg.now / (32 - (seg.speed >> 3)));
   const t20 = Math.trunc(t / 20);
   const palette = seg.getCurrentPalette();
