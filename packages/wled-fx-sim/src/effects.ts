@@ -7161,10 +7161,12 @@ function mode2DGhostRider(seg: Segment2D): void {
       WHITE,
     );
 
+    // int16_t gPosX/gPosY upstream: `+=` converts the whole sum, so the
+    // truncation is on the sum, not on the product.
     st.gPosX =
-      (st.gPosX + Math.trunc(st.Vspeed * sin_approx(radians(st.gAngle)))) | 0;
+      Math.trunc(st.gPosX + st.Vspeed * sin_approx(radians(st.gAngle))) | 0;
     st.gPosY =
-      (st.gPosY + Math.trunc(st.Vspeed * cos_approx(radians(st.gAngle)))) | 0;
+      Math.trunc(st.gPosY + st.Vspeed * cos_approx(radians(st.gAngle))) | 0;
     st.gAngle = (st.gAngle + st.angleSpeed) & 0xffff;
     if (st.gPosX < 0) st.gPosX = (cols - 1) * 10;
     if (st.gPosX > (cols - 1) * 10) st.gPosX = 0;
@@ -7190,9 +7192,10 @@ function mode2DGhostRider(seg: Segment2D): void {
         st.time[i] = 0;
         st.reg[i] = 0;
       } else {
-        // uint16 wrap on purpose: leaving the frame re-registers the lighter
-        st.lightersPosX[i] += Math.trunc(-7 * sin_approx(radians(st.angle[i])));
-        st.lightersPosY[i] += Math.trunc(-7 * cos_approx(radians(st.angle[i])));
+        // uint16 wrap on purpose: leaving the frame re-registers the lighter.
+        // The Uint16Array store truncates the sum, matching the uint16_t `+=`.
+        st.lightersPosX[i] += -7 * sin_approx(radians(st.angle[i]));
+        st.lightersPosY[i] += -7 * cos_approx(radians(st.angle[i]));
       }
       seg.wu_pixel(
         Math.trunc((st.lightersPosX[i] * 256) / 10),
