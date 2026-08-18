@@ -51,7 +51,9 @@ const PS_P_RADIUS_SHIFT_1D = 5; // 1 << shift == PS_P_RADIUS_1D
 const PS_P_SURFACE_1D = 5; // 2^surface == PS_P_RADIUS_1D
 const PS_P_MINHARDRADIUS_1D = 32; // min hard-surface radius (do not change: hourglass depends on it)
 const PS_P_MINSURFACEHARDNESS_1D = 120;
-const MAXPARTICLES_1D = 1300; // ESP32 default cap
+const MAXPARTICLES_1D = 1300; // ESP32-S2 tier (FXparticleSystem.h:262); the
+// generic ESP32 #else tier is 2600. Paired with MAXSOURCES_1D 32 from the same
+// tier. Note particles-2d.ts takes its caps from the generic tier instead.
 const MAXSOURCES_1D = 32;
 
 const GAMMA_CORRECT = false; // sim renders linear; canvas owns display gamma

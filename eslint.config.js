@@ -14,6 +14,10 @@ export default tseslint.config(
     // MIT-purity guard: @wiillownet/fastled-math must never import EUPL code.
     // This one-way dependency direction (effects -> math, never the reverse)
     // is the only thing keeping the math package MIT. Permanent; do not relax.
+    //
+    // Scope: import-based only. It cannot catch EUPL logic copy-pasted into
+    // fastled-math without an import statement -- that is covered by the
+    // per-function provenance review in PROVENANCE.md, not by this rule.
     files: ['packages/fastled-math/**/*.ts'],
     rules: {
       'no-restricted-imports': [

@@ -90,7 +90,11 @@ export interface EffectSim {
   readonly height: number;
   /** Render at show time `nowMs`; returns `length` RGB triples (row-major for 2D). */
   frame(nowMs: number): RGB[];
-  /** Reset scratch state + PRNG to frame 0 (e.g. when params change). */
+  /**
+   * Reset scratch state + PRNG to frame 0 (e.g. when params change). Rebuilds
+   * the Segment rather than clearing it in place, so per-effect WeakMap scratch
+   * is dropped along with aux0/aux1/step/data.
+   */
   reset(): void;
 }
 

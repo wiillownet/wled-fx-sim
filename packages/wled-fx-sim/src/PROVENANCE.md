@@ -38,6 +38,10 @@ package (see plan §5, Decision B: one monorepo, two packages).
 
 ## Per sim-file blocks
 
+This table covers `packages/wled-fx-sim/src` only. `packages/fastled-math/src`
+provenance is established per-function in the `lib8.ts` split section below,
+plus each file's own SPDX header.
+
 | sim file | upstream block | license | ws2812fxMatch |
 | --- | --- | --- | --- |
 | `lib8.ts` | **split — see per-function table below** | mixed | some (MIT primitives) / n/a |

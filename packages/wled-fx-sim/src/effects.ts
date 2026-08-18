@@ -517,9 +517,10 @@ function modeSparkle(seg: Segment): void {
 }
 
 // --- Flash Sparkle (21) / Hyper Sparkle (22) shared flash-timing base -------
-// Real firmware reuses aux0/step for two different roles across frames (a
-// last-flash timestamp, then a delay amount, then back) rather than adding
-// fields -- ported with that exact reuse, not "cleaned up" into named state.
+// Firmware compares `now - aux0 > step` but then writes `step = now` and
+// `aux0 = 255 - speed`, so the timestamp and the delay live in the opposite
+// fields from what the comparison reads (FX.cpp:789-794). Ported with that
+// exact field usage, not "cleaned up" into named state.
 function sparkleFlashBase(seg: Segment, count: number): void {
   if (!seg.check2) {
     for (let i = 0; i < seg.length; i++) {
@@ -10253,7 +10254,8 @@ const GRAY = 0x808080; // CRGB::Gray (fastled_slim.h:453)
 
 /**
  * float -> unsigned the way the ESP32 toolchain does it: negatives saturate to
- * 0 (`__fixunssfsi`) rather than wrapping as an x86 build would. Several of
+ * 0. The saturation comes from the Xtensa hardware FP conversion the compiler
+ * emits, not from libgcc's soft-float `__fixunssfsi` helper. Several of
  * these bodies feed a log10 term that goes negative below ~60 Hz straight into
  * an `unsigned`, so the choice is visible on screen, not academic.
  */

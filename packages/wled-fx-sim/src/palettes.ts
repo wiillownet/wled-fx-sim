@@ -116,7 +116,8 @@ export function hasPaletteData(pal: number): boolean {
 /**
  * Blend a 16-entry palette toward a target palette by up to `maxChanges`
  * byte-channels per call, one step at a time -- WLED/FastLED
- * nblendPaletteTowardPalette (fastled_slim.cpp), ported byte-for-byte over the
+ * nblendPaletteTowardPalette (declared fastled_slim.h:59; the body is not in
+ * the vendored tree), ported byte-for-byte over the
  * RGB[16] representation this sim uses in place of CRGBPalette16's raw bytes.
  * Mutates `current` in place. A real FastLED asymmetry, not a bug: a channel
  * eases *up* by 1 per changed step but eases *down* by up to 2, so a palette
