@@ -115,11 +115,21 @@ const HAT_WEIGHT = 1.4;
 
 // myMagnitude scale. Consumers divide it by 4 (Freqmap), 8 (Waterfall) or 16
 // (Freqpixels, Rocktaves) before casting to uint8, so the scale is chosen to
-// land all four in a usable brightness band at once. On the sim's FRAMETIME
-// clock the loudest frame sampled is the kick at t=0 (energy 255 -> 1020), so
-// Freqmap's /4 tops out at exactly 255 and none of the four casts wrap; the
-// theoretical ceiling of 1280 (a snare sampled at phase 0) is never hit,
-// because 4000ms is not a whole number of 23ms steps.
+// land all four in a usable brightness band at once. A kick sampled at phase 0
+// gives energy 255 -> 1020, which Freqmap's /4 maps to exactly 255.
+//
+// The ceiling above that is a snare at phase 0 (200 * SNARE_WEIGHT = 320 ->
+// 1280), and it IS reachable: gcd(23, 4000) = 1, so the FRAMETIME lattice
+// eventually lands on every millisecond of the loop. It first happens at
+// seg.now = 23000 (frame 1000), where Freqmap's /4 gives 320 and the uint8 cast
+// wraps to 64. More generally the cast wraps whenever a frame falls within
+// ~5.7ms of a snare onset -- about a quarter of snare onsets, ~12 frames per
+// 4000-frame lattice period, i.e. roughly once every 8s of preview.
+//
+// The wrap itself is faithful: fToU8 reproduces firmware's truncate-then-mask
+// cast exactly. Whether MAGNITUDE_SCALE or SNARE_WEIGHT should be retuned so
+// the four consumer casts stay in range is a fixture-design question, not a
+// port-fidelity one.
 const MAGNITUDE_SCALE = 4;
 
 function clamp8(v: number): number {
