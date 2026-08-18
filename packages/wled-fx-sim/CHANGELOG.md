@@ -1,5 +1,57 @@
 # @wiillownet/wled-fx-sim
 
+## 0.4.0
+
+### Minor Changes
+
+- **Breaking: `getEffectSim` is no longer exported.** It was undocumented, unused
+  internally, and its return type leaked the internal `Segment` class into the
+  published type definitions, so consumers got back a value typed against a class
+  they could not name from the package root. Use `createEffectSim`, the documented
+  entry point, which covers the same ground. `Segment` itself is still reachable
+  via the `./segment` subpath export.
+
+  Effect fixes, each verified against WLED v16.0.0 (commit `4374f01`):
+
+  - **fx 201 "PS Blobs" crashed on small matrices.** Any matrix with both
+    dimensions at least 2 and at most 9 pixels total threw a `TypeError` on the
+    first frame, at every slider position. The 2D particle init was missing
+    firmware's floor that refuses to allocate below 5 particles and falls back to
+    a static render.
+  - **Meteor (76) was missing its entire "Smooth" trail mode.** The `check3`
+    branch — a different start position, a per-pixel trail decay, and its own draw
+    — was never ported, leaving the checkbox inert.
+  - **2D Drift (164) rotated at the wrong phase and rate** on any matrix whose
+    larger dimension is odd. The halved dimension truncates to an integer upstream
+    but was computed as a float here, which also drew two extra rings.
+  - **Ghost Rider (120) drifted slower than firmware** in the -x/-y directions.
+    Position updates truncated the product rather than the sum, losing up to a
+    pixel per frame and skipping sub-unit steps entirely.
+  - **Noisefire (143) settled on the wrong fire column after long runtimes.** Its
+    noise coordinate is unsigned 32-bit on device and has to fold at each
+    multiply; a trailing mask cannot recover bits that were never wrapped.
+  - Narrower integer-width corrections: logical rather than signed shifts in Scan,
+    Chase and Comet, a `uint8_t` narrow on Fire2012's ignition area, and one on PS
+    Spray's initial hue.
+
+  Palette lookups also change for indices above 255 — see the
+  `@wiillownet/fastled-math` patch in this release for what moved and why.
+
+  Internal, no API change:
+
+  - The four particle-physics helpers shared by the 1D and 2D engines are defined
+    once now rather than duplicated per engine, matching upstream.
+  - The baked fixed-palette table is frozen. `loadPalette` hands entries out by
+    reference, so a stray in-place write would previously have corrupted that
+    palette for every simulator using the id.
+  - The 1D particle caps now use WLED's default (generic ESP32) tier, matching the
+    2D engine, which affects only segments longer than roughly 1787 pixels.
+
+### Patch Changes
+
+- Updated dependencies
+  - @wiillownet/fastled-math@0.1.1
+
 ## 0.3.0
 
 ### Minor Changes

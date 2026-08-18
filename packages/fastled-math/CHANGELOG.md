@@ -1,5 +1,25 @@
 # @wiillownet/fastled-math
 
+## 0.1.1
+
+### Patch Changes
+
+- Fix `colorFromPalette` applying the `LINEARBLEND_NOWRAP` remap to an
+  already-narrowed index.
+
+  Upstream (`colors.cpp:118`) remaps the full unsigned palette index and narrows
+  it to a byte only afterward; this narrowed first. The two agreed for indices up
+  to 255 and diverged above it: at index 510 the lookup landed on palette entry 14
+  where firmware uses 13, and at 5000 on entry 7 where firmware uses 4.
+
+  `LINEARBLEND_NOWRAP` is the default blend mode whenever the palette is not
+  moving, so this was the common path rather than an edge case. Any caller passing
+  an index above 255 was affected — a time-driven counter, or a raw 16-bit noise
+  value.
+
+  This is a behavior change rather than an API change: affected palette lookups
+  now return different colors.
+
 ## 0.1.0
 
 ### Minor Changes
