@@ -54,9 +54,10 @@ package (see plan §5, Decision B: one monorepo, two packages).
 
 `audio-fixture.ts` deserves a note, because the obvious assumption about it is
 wrong. WLED has its own no-audio stand-in, `simulateSound()` (`wled00/util.cpp`),
-and this file does the same job — feeding the audio-reactive `mode_*` bodies a
-`volumeSmth` + 16-band `fftResult` when no analysis exists. It is **not a port of
-it**. It was written from scratch as a canned 120 BPM drum-and-bass phrase (kick,
+and this file does the same job — feeding the audio-reactive `mode_*` bodies the
+`um_data` channels they read (`volumeSmth`, `volumeRaw`, a 16-band `fftResult`,
+`samplePeak`, `FFT_MajorPeak`, `my_magnitude`) when no analysis exists. It is
+**not a port of it**. It was written from scratch as a canned 120 BPM drum-and-bass phrase (kick,
 snare, hi-hat envelopes plus a bassline contour), which is a different construction
 from any of firmware's four simulation modes and carries more musical structure
 than they do. No upstream lines were consulted or copied, so nothing about it is
@@ -226,3 +227,30 @@ the EUPL "Communication"/web-app question. Groups A + C ship with attribution.
 - Precedent noted for the file: CRAN's `cptcity` package (GPL-3) redistributes
   7,140 cpt-city gradients; GMT (LGPL) vendors cpt-city palettes in-tree;
   cpt-city's maintainer publicly welcomed FastLED's PaletteKnife use.
+
+## [2026-08-17] Audio-reactive 1D port — no new routing questions
+
+The 28 audio-reactive 1D `mode_*` bodies (fx 128-216) were ported into the
+existing `effects.ts` block, and `audio-fixture.ts` grew four channels. Neither
+opens a new licensing question, but both are worth recording:
+
+1. **The effect bodies are ordinary `FX.cpp` ports → EUPL**, same as every other
+   `mode_*` in `effects.ts`. Nothing here has a WS2812FX (2016) ancestor: the
+   whole audio-reactive family postdates it and originates with WLED-SR
+   (Andrew Tuline, Andreas Pleschung, Will Tatam) or, for fx 212-216, with
+   @dedehai's particle system. So `ws2812fxMatch: n/a` — flag 2's pending diff
+   does not extend to any of them. No new files, so no new ledger rows.
+2. **The fixture's new channels are still authored, not derived.** `volumeRaw`,
+   `samplePeak`, `fftMajorPeak` and `myMagnitude` were shaped from what the
+   consuming `mode_*` bodies *read* (divisors, cutoffs, log10 ranges), which is
+   the EUPL source this package already ports under. `simulateSound()` was
+   deliberately not consulted again, so the "not a port of it" claim above still
+   holds for the extended file. The `audio-fixture.ts` row stays **authored**.
+3. **One firmware detail worth pinning**, because it looks like a fixture
+   channel and is not: `um_data` slots 6 and 7 (`maxVol`, `binNum`) are written
+   by the *effect* from its own sliders (`FX.cpp:6676`, `7141`, `7511`) for the
+   analyser to read back. With no usermod, that round-trip has no far end, so
+   the ports drop it. Consequence for the README compatibility matrix if it ever
+   lists per-effect controls: Ripple Peak / Puddlepeak / Waterfall's "Select
+   bin" and "Volume (min)" sliders do not affect rendered output in firmware
+   either — they only talk to the analyser.

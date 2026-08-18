@@ -101,6 +101,18 @@ function map(
   );
 }
 
+/** WLED mapf(): the float form of map(), no truncation -- wled_math.cpp. */
+function mapf(
+  x: number,
+  inMin: number,
+  inMax: number,
+  outMin: number,
+  outMax: number,
+): number {
+  const d = inMax - inMin;
+  return ((x - inMin) * (outMax - outMin)) / (d === 0 ? 1 : d) + outMin;
+}
+
 /** SEGLEN<=1 fallback -- FX_FALLBACK_STATIC. */
 function fallbackStatic(seg: Segment): void {
   seg.fill(seg.color(0));
@@ -9093,6 +9105,35 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
   210: modeParticleChase, // "PS Chase"
   211: modeParticleStarburst, // "PS Starburst"
   213: modeParticleFire1D, // "PS Fire 1D"
+  // Audio-reactive 1D set -- all read the synthetic fixture, never real audio.
+  128: modePixels,
+  129: modePixelwave,
+  130: modeJuggles,
+  131: modeMatripix,
+  132: modeGravimeter,
+  133: modePlasmoid,
+  134: modePuddles,
+  135: modeMidnoise,
+  136: modeNoisemeter,
+  137: modeFreqwave,
+  138: modeFreqmatrix,
+  140: modeWaterfall,
+  141: modeFreqpixels,
+  143: modeNoisefire,
+  144: modePuddlepeak,
+  145: modeNoisemove,
+  148: modeRipplePeak,
+  155: modeFreqmap,
+  156: modeGravcenter,
+  157: modeGravcentric,
+  158: modeGravfreq,
+  159: modeDJLight,
+  163: modeBlurz,
+  185: modeRocktaves,
+  212: modeParticleGeq1D, // "PS GEQ 1D"
+  214: modeParticleSonicStream, // "PS Sonic Stream"
+  215: modeParticleSonicBoom, // "PS Sonic Boom"
+  216: modeParticleSpringy, // "PS Springy"
 };
 
 // --- Dual 1D/2D effects: matrix branches --------------------------------
@@ -9585,10 +9626,7 @@ function mode2DExplodingFireworks(seg: Segment2D): void {
 // There is no real audio analysis in this sim (locked constraint), so every
 // one of them reads sampleSyntheticAudio() (audio-fixture.ts) instead --
 // always the "audio present" branch of the firmware body, since this sim has
-// no concept of "usermod absent" to fall back from. The synthetic fixture
-// has no separate raw/smoothed channel, so anywhere firmware also wants
-// volumeRaw alongside volumeSmth, volumeSmth is reused for both (documented
-// per call site below).
+// no concept of "usermod absent" to fall back from.
 
 // --- GEQ (139) -----------------------------------------------------------
 const geqBarState = new WeakMap<Segment2D, Uint16Array>();
@@ -9727,8 +9765,7 @@ function mode2DSwirl(seg: Segment2D): void {
   // j is a row coordinate -- only symmetric on a square matrix. Preserved.
   const nj = cols - 1 - j;
 
-  const { volumeSmth } = sampleSyntheticAudio(seg.now);
-  const volumeRaw = volumeSmth; // no separate raw/smoothed channel in the fixture
+  const { volumeSmth, volumeRaw } = sampleSyntheticAudio(seg.now);
 
   const tap = (x: number, y: number, divisor: number): void => {
     const index = (Math.trunc(seg.now / divisor) + volumeSmth * 4) & 0xff;
@@ -9945,8 +9982,7 @@ function modeParticleSpray2D(seg: Segment2D): void {
   // Firmware branches on whether the real AudioReactive usermod is present;
   // this sim has no such usermod, so it always takes the "AR data present"
   // branch, fed by the synthetic fixture instead.
-  const { volumeSmth } = sampleSyntheticAudio(seg.now);
-  const volumeRaw = volumeSmth;
+  const { volumeSmth, volumeRaw } = sampleSyntheticAudio(seg.now);
   ps.sources[0].minLife = 30;
 
   if (
@@ -10157,6 +10193,1407 @@ function modeParticleBlobs2D(seg: Segment2D): void {
   }
 
   ps.setMotionBlur((seg.custom3 << 3) + 7);
+  ps.update();
+}
+
+// === Audio-reactive 1D effects ===============================================
+// Same standing rule as the 2D set above: this sim performs no audio analysis,
+// so every body here reads sampleSyntheticAudio() (audio-fixture.ts) in place of
+// WLED's um_data and always takes the firmware's "audio present" branch.
+//
+// Three firmware conventions recur across this block and are explained only here:
+//
+// * `*binNum = SEGMENT.custom1` / `*maxVol = SEGMENT.custom2 / 2` (FX.cpp:6676,
+//   7141, 7511) write back *into the usermod*, and the matching call-0 reads
+//   restore the sliders from it. With no usermod there is no other end to that
+//   round-trip, so those lines are no-ops and are omitted. Worth noting what
+//   that implies: Ripple Peak / Puddlepeak / Waterfall never read custom1 or
+//   custom2 anywhere else, so their "Select bin" / "Volume (min)" sliders do
+//   nothing to the rendered output in firmware either -- they only talk to the
+//   analyser. Nothing is lost by dropping them.
+// * `micros()` -> `seg.now * 1000`; this sim has only ms resolution, matching
+//   the Funky Plank port above. The uint32 micros() rollover is not emulated.
+// * `hw_random*()` -> `seg.rng.*`, as everywhere else in this file.
+
+/** Nyquist limit for WLED's 22kHz sampling, and its log10 -- FX.cpp:78-79. */
+const MAX_FREQUENCY = 11025;
+const MAX_FREQ_LOG10 = 4.04238;
+const GRAY = 0x808080; // CRGB::Gray (fastled_slim.h:453)
+
+/**
+ * float -> unsigned the way the ESP32 toolchain does it: negatives saturate to
+ * 0 (`__fixunssfsi`) rather than wrapping as an x86 build would. Several of
+ * these bodies feed a log10 term that goes negative below ~60 Hz straight into
+ * an `unsigned`, so the choice is visible on screen, not academic.
+ */
+function fToUnsigned(v: number): number {
+  return v < 0 ? 0 : Math.trunc(v);
+}
+
+/** float -> uint8_t: fToUnsigned plus the narrowing the C++ assignment does. */
+function fToU8(v: number): number {
+  return fToUnsigned(v) & 0xff;
+}
+
+/** Integer square root -- wled_math.cpp sqrt32_bw (exact, so Math.sqrt matches). */
+function sqrt32bw(v: number): number {
+  return Math.trunc(Math.sqrt(Math.max(0, v)));
+}
+
+// --- Pixels (128) ------------------------------------------------------------
+// mode_pixels (FX.cpp:7174): a 32-deep ring of volume samples, sprayed onto
+// random pixels. Firmware indexes the ring by `strip.now % 32`, which at 42fps
+// skips most slots -- its own comment calls this "filling values semi randomly".
+function modePixels(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  const myVals = seg.allocateData(32);
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+
+  myVals[seg.now % 32] = volumeSmth & 0xff;
+
+  seg.fade_out(64 + (seg.speed >> 1));
+
+  for (let i = 0; i < Math.trunc(seg.intensity / 8); i++) {
+    const segLoc = seg.rng.random16(seg.length);
+    seg.setPixelColor(
+      segLoc,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(myVals[i % 32] + i * 4, false, false, 0),
+        volumeSmth & 0xff,
+      ),
+    );
+  }
+}
+
+// --- Pixelwave (129) ---------------------------------------------------------
+// mode_pixelwave (FX.cpp:7062): a volume-lit pixel injected at the centre, with
+// both halves shifting outward.
+function modePixelwave(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const { volumeRaw } = sampleSyntheticAudio(seg.now);
+
+  // `micros()/(256-speed)/500+1 % 16`: `%` binds tighter than `+`, so the
+  // `% 16` applies to the literal 1 and the whole term reduces to `+1`. Same
+  // precedence quirk as Funky Plank; preserved rather than "fixed".
+  const usNow = seg.now * 1000;
+  const secondHand =
+    (Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) + 1) & 0xff;
+  if (seg.aux0 !== secondHand) {
+    seg.aux0 = secondHand;
+
+    const pixBri = Math.trunc((volumeRaw * seg.intensity) / 64) & 0xff;
+    const half = Math.trunc(seg.length / 2);
+
+    seg.setPixelColor(
+      half,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(seg.now, false, false, 0),
+        pixBri,
+      ),
+    );
+    for (let i = seg.length - 1; i > half; i--)
+      seg.setPixelColor(i, seg.getPixelColor(i - 1));
+    for (let i = 0; i < half; i++)
+      seg.setPixelColor(i, seg.getPixelColor(i + 1));
+  }
+}
+
+// --- Juggles (130) -----------------------------------------------------------
+// mode_juggles (FX.cpp:6925): beatsin-driven dots, brightness = volume.
+function modeJuggles(seg: Segment): void {
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+
+  seg.fade_out(224); // 6.25%
+  const mySampleAgc = Math.max(0, Math.min(volumeSmth, 255));
+
+  for (let i = 0; i < Math.trunc(seg.intensity / 32) + 1; i++) {
+    seg.setPixelColor(
+      beatsin16_t(Math.trunc(seg.speed / 4) + i * 2, seg.now, 0, seg.length - 1),
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(
+          Math.trunc(seg.now / 4) + i * 2,
+          false,
+          false,
+          0,
+        ),
+        mySampleAgc,
+      ),
+    );
+  }
+}
+
+// --- Matripix (131) ----------------------------------------------------------
+// mode_matripix (FX.cpp:6943): a volume-lit pixel pushed in at the right end,
+// the whole strip shifting left. Firmware keeps its own uint32 shadow buffer in
+// SEGENV.data; here that is a per-Segment Uint32Array (SEGENV.data is a byte
+// array in this sim), same as the 2D GEQ port's peak-height store.
+const matripixPixels = new WeakMap<Segment, Uint32Array>();
+
+function modeMatripix(seg: Segment): void {
+  let pixels = matripixPixels.get(seg);
+  if (!pixels || pixels.length !== seg.length) {
+    pixels = new Uint32Array(seg.length);
+    matripixPixels.set(seg, pixels);
+  }
+
+  const { volumeRaw } = sampleSyntheticAudio(seg.now);
+
+  if (seg.call === 0) pixels.fill(BLACK);
+
+  const usNow = seg.now * 1000;
+  const secondHand =
+    Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) % 16;
+  if (seg.aux0 !== secondHand) {
+    seg.aux0 = secondHand;
+
+    // firmware keeps pixBri in an `int` and lets color_blend's uint8_t
+    // parameter narrow it, so a loud sample at high Brightness wraps.
+    const pixBri = Math.trunc((volumeRaw * seg.intensity) / 64) & 0xff;
+    const k = seg.length - 1;
+    for (let i = 0; i < k; i++) {
+      pixels[i] = pixels[i + 1];
+      seg.setPixelColor(i, pixels[i]);
+    }
+    pixels[k] = color_blend(
+      seg.color(1),
+      seg.color_from_palette(seg.now, false, false, 0),
+      pixBri,
+    );
+    seg.setPixelColor(k, pixels[k]);
+  }
+}
+
+// --- Gravcenter family (132 / 156 / 157 / 158) -------------------------------
+// mode_gravcenter_base (FX.cpp:6807): one body behind four effects, merged
+// upstream by @dedehai. mode 0 Gravcenter, 1 Gravcentric, 2 Gravimeter,
+// 3 Gravfreq -- registered as four wrappers below, exactly as firmware does.
+interface GravityState {
+  topLED: number;
+  gravityCounter: number;
+}
+const gravcenterState = new WeakMap<Segment, GravityState>();
+
+function modeGravcenterBase(seg: Segment, mode: number): void {
+  if (seg.length === 1) return fallbackStatic(seg);
+
+  let grav = gravcenterState.get(seg);
+  if (!grav) {
+    grav = { topLED: 0, gravityCounter: 0 };
+    gravcenterState.set(seg, grav);
+  }
+
+  const { volumeSmth, fftMajorPeak } = sampleSyntheticAudio(seg.now);
+
+  if (mode === 1) seg.fade_out(253);
+  else if (mode === 2) seg.fade_out(249);
+  else if (mode === 3) seg.fade_out(250);
+  else seg.fade_out(251);
+
+  const half = Math.trunc(seg.length / 2);
+  let mySampleAvg: number;
+  let tempsamp: number;
+  let segmentSampleAvg = (volumeSmth * seg.intensity) / 255;
+
+  if (mode === 2) {
+    // Gravimeter
+    segmentSampleAvg *= 0.25;
+    mySampleAvg = mapf(segmentSampleAvg * 2, 0, 64, 0, seg.length - 1);
+    tempsamp = Math.trunc(
+      Math.min(Math.max(mySampleAvg, 0), seg.length - 1),
+    );
+  } else {
+    segmentSampleAvg *= 0.125;
+    // note the float halving here vs the integer `SEGLEN/2` in the constrain
+    mySampleAvg = mapf(segmentSampleAvg * 2, 0, 32, 0, seg.length / 2);
+    tempsamp = Math.trunc(Math.min(Math.max(mySampleAvg, 0), half));
+  }
+
+  const gravity = 8 - Math.trunc(seg.speed / 32); // 1..8, never 0
+  const offset = mode === 2 ? 0 : 1;
+  if (tempsamp >= grav.topLED) grav.topLED = tempsamp - offset;
+  else if (grav.gravityCounter % gravity === 0) grav.topLED--;
+
+  if (mode === 1) {
+    // Gravcentric
+    for (let i = 0; i < tempsamp; i++) {
+      const index = fToU8(segmentSampleAvg * 24 + Math.trunc(seg.now / 200));
+      seg.setPixelColor(
+        i + half,
+        seg.color_from_palette(index, false, false, 0),
+      );
+      seg.setPixelColor(
+        half - 1 - i,
+        seg.color_from_palette(index, false, false, 0),
+      );
+    }
+    if (grav.topLED >= 0) {
+      seg.setPixelColor(grav.topLED + half, GRAY);
+      seg.setPixelColor(half - 1 - grav.topLED, GRAY);
+    }
+  } else if (mode === 2) {
+    // Gravimeter
+    for (let i = 0; i < tempsamp; i++) {
+      const index = perlin8(
+        Math.trunc(i * segmentSampleAvg + seg.now) & 0xffff,
+        Math.trunc(5000 + i * segmentSampleAvg) & 0xffff,
+      );
+      seg.setPixelColor(
+        i,
+        color_blend(
+          seg.color(1),
+          seg.color_from_palette(index, false, false, 0),
+          fToU8(segmentSampleAvg * 8),
+        ),
+      );
+    }
+    if (grav.topLED > 0) {
+      seg.setPixelColor(
+        grav.topLED,
+        seg.color_from_palette(seg.now, false, false, 0),
+      );
+    }
+  } else if (mode === 3) {
+    // Gravfreq
+    for (let i = 0; i < tempsamp; i++) {
+      const peak = fftMajorPeak < 1 ? 1 : fftMajorPeak;
+      const index = fToU8(
+        (Math.log10(peak) - (MAX_FREQ_LOG10 - 1.78)) * 255,
+      );
+      seg.setPixelColor(
+        i + half,
+        seg.color_from_palette(index, false, false, 0),
+      );
+      seg.setPixelColor(
+        half - i - 1,
+        seg.color_from_palette(index, false, false, 0),
+      );
+    }
+    if (grav.topLED >= 0) {
+      seg.setPixelColor(grav.topLED + half, GRAY);
+      seg.setPixelColor(half - 1 - grav.topLED, GRAY);
+    }
+  } else {
+    // Gravcenter
+    for (let i = 0; i < tempsamp; i++) {
+      const index = perlin8(
+        Math.trunc(i * segmentSampleAvg + seg.now) & 0xffff,
+        Math.trunc(5000 + i * segmentSampleAvg) & 0xffff,
+      );
+      const col = color_blend(
+        seg.color(1),
+        seg.color_from_palette(index, false, false, 0),
+        fToU8(segmentSampleAvg * 8),
+      );
+      seg.setPixelColor(i + half, col);
+      seg.setPixelColor(half - i - 1, col);
+    }
+    if (grav.topLED >= 0) {
+      const col = seg.color_from_palette(seg.now, false, false, 0);
+      seg.setPixelColor(grav.topLED + half, col);
+      seg.setPixelColor(half - 1 - grav.topLED, col);
+    }
+  }
+
+  grav.gravityCounter = (grav.gravityCounter + 1) % gravity;
+}
+
+function modeGravcenter(seg: Segment): void {
+  modeGravcenterBase(seg, 0);
+}
+function modeGravcentric(seg: Segment): void {
+  modeGravcenterBase(seg, 1);
+}
+function modeGravimeter(seg: Segment): void {
+  modeGravcenterBase(seg, 2);
+}
+function modeGravfreq(seg: Segment): void {
+  modeGravcenterBase(seg, 3);
+}
+
+// --- Plasmoid (133) ----------------------------------------------------------
+// mode_plasmoid (FX.cpp:7095): two drifting phases make a plasma; volume gates
+// which pixels survive.
+interface PlasPhase {
+  thisphase: number;
+  thatphase: number;
+}
+const plasmoidState = new WeakMap<Segment, PlasPhase>();
+
+function modePlasmoid(seg: Segment): void {
+  let plas = plasmoidState.get(seg);
+  if (!plas) {
+    plas = { thisphase: 0, thatphase: 0 };
+    plasmoidState.set(seg, plas);
+  }
+
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+
+  seg.fadeToBlackBy(32);
+
+  // Firmware calls beatsin8_t(6,-4,4): `lowest` is a uint8_t parameter, so -4
+  // arrives as 252 and the uint8 result lands in {252..255, 0..4} -- added to
+  // an int16 phase that is only ever used mod 256, where 252 == -4. This sim's
+  // beatsin8_t returns the signed -4..4 directly, which is the same value mod
+  // 256, so the animation matches; the int16 accumulator is kept wrapping.
+  plas.thisphase =
+    ((plas.thisphase + beatsin8_t(6, seg.now, -4, 4)) << 16) >> 16;
+  plas.thatphase =
+    ((plas.thatphase + beatsin8_t(7, seg.now, -4, 4)) << 16) >> 16;
+
+  for (let i = 0; i < seg.length; i++) {
+    let thisbright =
+      cubicwave8(
+        (i * (1 + Math.trunc((3 * seg.speed) / 32)) + plas.thisphase) & 0xff,
+      ) >> 1;
+    thisbright =
+      (thisbright +
+        (cos8(
+          (i * (97 + Math.trunc((5 * seg.speed) / 32)) + plas.thatphase) & 0xff,
+        ) >>
+          1)) &
+      0xff;
+
+    const colorIndex = thisbright;
+    if ((volumeSmth * seg.intensity) / 64 < thisbright) thisbright = 0;
+
+    seg.addPixelColor(
+      i,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(colorIndex, false, false, 0),
+        thisbright,
+      ),
+    );
+  }
+}
+
+// --- Puddles (134) / Puddlepeak (144) ----------------------------------------
+// mode_puddles_base (FX.cpp:7126): one body, two effects (merged by @dedehai).
+// Puddles sizes its flash from raw volume every frame; Puddlepeak only flashes
+// on a detected beat and sizes it from smoothed volume.
+function modePuddlesBase(seg: Segment, peakdetect: boolean): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  let size = 0;
+  const fadeVal = map(seg.speed, 0, 255, 224, 254);
+  const pos = seg.rng.random16(seg.length);
+  seg.fade_out(fadeVal);
+
+  const { volumeRaw, volumeSmth, samplePeak } = sampleSyntheticAudio(seg.now);
+
+  if (peakdetect) {
+    // volumeSmth is a float upstream, so this whole expression is float and
+    // only truncates on assignment to `unsigned size`...
+    if (samplePeak) {
+      size = Math.trunc((volumeSmth * seg.intensity) / 256 / 4 + 1);
+      if (pos + size >= seg.length) size = seg.length - pos;
+    }
+  } else {
+    // ...whereas volumeRaw is an `int`, so this one truncates at every step.
+    if (volumeRaw > 1) {
+      size = Math.trunc(Math.trunc((volumeRaw * seg.intensity) / 256) / 8) + 1;
+      if (pos + size >= seg.length) size = seg.length - pos;
+    }
+  }
+
+  for (let i = 0; i < size; i++) {
+    seg.setPixelColor(
+      pos + i,
+      seg.color_from_palette(seg.now, false, false, 0),
+    );
+  }
+}
+
+function modePuddles(seg: Segment): void {
+  modePuddlesBase(seg, false);
+}
+function modePuddlepeak(seg: Segment): void {
+  modePuddlesBase(seg, true);
+}
+
+// --- Midnoise (135) ----------------------------------------------------------
+// mode_midnoise (FX.cpp:6977): a noise bar growing outward from the centre.
+function modeMidnoise(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+
+  seg.fade_out(seg.speed);
+  seg.fade_out(seg.speed);
+
+  let tmpSound2 = (volumeSmth * seg.intensity) / 256; // "Too sensitive."
+  tmpSound2 *= seg.intensity / 128; // "Reduce sensitivity/length."
+
+  const half = Math.trunc(seg.length / 2);
+  // `SEGLEN/2` is unsigned integer division here, unlike Gravcenter's `(float)`
+  let maxLen = fToUnsigned(mapf(tmpSound2, 0, 127, 0, half));
+  if (maxLen > half) maxLen = half;
+
+  for (let i = half - maxLen; i < half + maxLen; i++) {
+    const index = perlin8(
+      Math.trunc(i * volumeSmth + seg.aux0) & 0xffff,
+      Math.trunc(seg.aux1 + i * volumeSmth) & 0xffff,
+    );
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0));
+  }
+
+  seg.aux0 = (seg.aux0 + beatsin8_t(5, seg.now, 0, 10)) & 0xffff;
+  seg.aux1 = (seg.aux1 + beatsin8_t(4, seg.now, 0, 10)) & 0xffff;
+}
+
+// --- Noisemeter (136) --------------------------------------------------------
+// mode_noisemeter (FX.cpp:7033): the same noise bar, but anchored at pixel 0
+// and driven by raw volume.
+function modeNoisemeter(seg: Segment): void {
+  const { volumeSmth, volumeRaw } = sampleSyntheticAudio(seg.now);
+
+  const fadeRate = map(seg.speed, 0, 255, 200, 254);
+  seg.fade_out(fadeRate);
+
+  const tmpSound2 = (volumeRaw * 2 * seg.intensity) / 255;
+  let maxLen = fToUnsigned(mapf(tmpSound2, 0, 255, 0, seg.length));
+  // firmware's `if (maxLen < 0)` is dead code -- maxLen is unsigned (FX.cpp:7045)
+  if (maxLen > seg.length) maxLen = seg.length;
+
+  for (let i = 0; i < maxLen; i++) {
+    const index = perlin8(
+      Math.trunc(i * volumeSmth + seg.aux0) & 0xffff,
+      Math.trunc(seg.aux1 + i * volumeSmth) & 0xffff,
+    );
+    seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0));
+  }
+
+  seg.aux0 = (seg.aux0 + beatsin8_t(5, seg.now, 0, 10)) & 0xffff;
+  seg.aux1 = (seg.aux1 + beatsin8_t(4, seg.now, 0, 10)) & 0xffff;
+}
+
+// --- Freqwave (137) ----------------------------------------------------------
+// mode_freqwave (FX.cpp:7385): major peak -> hue, volume -> value, injected at
+// the centre and shifted outward. Deliberately bypasses the palette (HSV wheel).
+function modeFreqwave(seg: Segment): void {
+  const { fftMajorPeak, volumeSmth } = sampleSyntheticAudio(seg.now);
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const usNow = seg.now * 1000;
+  const secondHand =
+    Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) % 16;
+  if (seg.aux0 !== secondHand) {
+    seg.aux0 = secondHand;
+
+    const sensitivity = mapf(seg.custom3, 1, 31, 1, 10);
+    const pixVal = Math.min(
+      255,
+      ((volumeSmth * seg.intensity) / 256) * sensitivity,
+    );
+    const intensity = mapf(pixVal, 0, 255, 0, 100) / 100;
+
+    let color = BLACK;
+    let peak = fftMajorPeak;
+    if (peak > MAX_FREQUENCY) peak = 1;
+
+    if (peak < 80) {
+      color = BLACK;
+    } else {
+      const upperLimit = 80 + 42 * seg.custom2;
+      const lowerLimit = 80 + 3 * seg.custom1;
+      // at the defaults (custom1 == custom2 == 0) the limits are equal, so the
+      // firmware falls through to using the raw frequency as the hue byte
+      const i =
+        lowerLimit !== upperLimit
+          ? map(Math.trunc(peak), lowerLimit, upperLimit, 0, 255) & 0xff
+          : fToU8(peak);
+      const b = Math.min(255, fToUnsigned(255 * intensity));
+      color = hsv2rgb_rainbow(i << 8, 240, b);
+    }
+
+    const half = Math.trunc(seg.length / 2);
+    seg.setPixelColor(half, color);
+    for (let i = seg.length - 1; i > half; i--)
+      seg.setPixelColor(i, seg.getPixelColor(i - 1));
+    for (let i = 0; i < half; i++)
+      seg.setPixelColor(i, seg.getPixelColor(i + 1));
+  }
+}
+
+// --- Freqmatrix (138) --------------------------------------------------------
+// mode_freqmatrix (FX.cpp:7291): Freqwave's sibling -- same colouring, but the
+// pixel is injected at index 0 and the strip shifts one way only.
+function modeFreqmatrix(seg: Segment): void {
+  const { fftMajorPeak, volumeSmth } = sampleSyntheticAudio(seg.now);
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const usNow = seg.now * 1000;
+  const secondHand =
+    Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) % 16;
+  if (seg.aux0 !== secondHand) {
+    seg.aux0 = secondHand;
+
+    const sensitivity = map(seg.custom3, 0, 31, 1, 10);
+    let pixVal = Math.trunc(
+      (volumeSmth * seg.intensity * sensitivity) / 256,
+    );
+    if (pixVal > 255) pixVal = 255;
+
+    // integer map() first, then the float division -- not mapf
+    const intensity = map(pixVal, 0, 255, 0, 100) / 100;
+
+    let color = BLACK;
+    let peak = fftMajorPeak;
+    if (peak > MAX_FREQUENCY) peak = 1;
+
+    if (peak < 80) {
+      color = BLACK;
+    } else {
+      const upperLimit = 80 + 42 * seg.custom2;
+      const lowerLimit = 80 + 3 * seg.custom1;
+      const i =
+        lowerLimit !== upperLimit
+          ? map(Math.trunc(peak), lowerLimit, upperLimit, 0, 255) & 0xff
+          : fToU8(peak);
+      let b = fToUnsigned(255 * intensity);
+      if (b > 255) b = 255;
+      color = hsv2rgb_rainbow(i << 8, 240, b);
+    }
+
+    seg.setPixelColor(0, color);
+    for (let i = seg.length - 1; i > 0; i--)
+      seg.setPixelColor(i, seg.getPixelColor(i - 1));
+  }
+}
+
+// --- Waterfall (140) ---------------------------------------------------------
+// mode_waterfall (FX.cpp:7489): peak detection combined with major peak and
+// magnitude, scrolling left. Same uint32 shadow buffer as Matripix.
+const waterfallPixels = new WeakMap<Segment, Uint32Array>();
+
+function modeWaterfall(seg: Segment): void {
+  let pixels = waterfallPixels.get(seg);
+  if (!pixels || pixels.length !== seg.length) {
+    pixels = new Uint32Array(seg.length);
+    waterfallPixels.set(seg, pixels);
+  }
+
+  const { samplePeak, fftMajorPeak, myMagnitude } = sampleSyntheticAudio(
+    seg.now,
+  );
+  const magnitude = myMagnitude / 8;
+  const peak = fftMajorPeak < 1 ? 1 : fftMajorPeak;
+
+  if (seg.call === 0) {
+    pixels.fill(BLACK);
+    seg.aux0 = 255;
+  }
+
+  const usNow = seg.now * 1000;
+  const secondHand =
+    (Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) + 1) & 0xff;
+  if (seg.aux0 !== secondHand) {
+    seg.aux0 = secondHand;
+
+    let pixCol = fToU8((Math.log10(peak) - 2.26) * 150);
+    if (peak < 182) pixCol = 0; // handle underflow
+
+    const k = seg.length - 1;
+    if (samplePeak) {
+      pixels[k] = hsv2rgb_rainbow(92 << 8, 92, 92);
+    } else {
+      pixels[k] = color_blend(
+        seg.color(1),
+        seg.color_from_palette(pixCol + seg.intensity, false, false, 0),
+        fToU8(magnitude),
+      );
+    }
+    seg.setPixelColor(k, pixels[k]);
+    for (let i = 0; i < k; i++) {
+      pixels[i] = pixels[i + 1];
+      seg.setPixelColor(i, pixels[i]);
+    }
+  }
+}
+
+// --- Freqpixels (141) --------------------------------------------------------
+// mode_freqpixels (FX.cpp:7345): random pixels coloured by the major peak,
+// brightness from its magnitude.
+function modeFreqpixels(seg: Segment): void {
+  const { fftMajorPeak, myMagnitude } = sampleSyntheticAudio(seg.now);
+  const magnitude = myMagnitude / 16;
+  const peak = fftMajorPeak < 1 ? 1 : fftMajorPeak;
+
+  let fadeRate = seg.speed * seg.speed;
+  fadeRate = map(fadeRate, 0, 65535, 1, 255);
+
+  const fadeoutDelay = Math.trunc((256 - seg.speed) / 64);
+  if (fadeoutDelay <= 1 || seg.call % fadeoutDelay === 0) seg.fade_out(fadeRate);
+
+  let pixCol = fToU8(((Math.log10(peak) - 1.78) * 255) / (MAX_FREQ_LOG10 - 1.78));
+  if (peak < 61) pixCol = 0; // handle underflow
+
+  for (let i = 0; i < Math.trunc(seg.intensity / 32) + 1; i++) {
+    const locn = seg.rng.random16(0, seg.length);
+    seg.setPixelColor(
+      locn,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(seg.intensity + pixCol, false, false, 0),
+        fToU8(magnitude),
+      ),
+    );
+  }
+}
+
+// --- Noisefire (143) ---------------------------------------------------------
+// mode_noisefire (FX.cpp:7008): volume-reactive fire on its own hard-coded fire
+// palette, ignoring the segment palette entirely.
+// prettier-ignore
+const NOISEFIRE_PALETTE: RGB[] = [
+  unpack(hsv2rgb_rainbow(0, 255, 2)),  unpack(hsv2rgb_rainbow(0, 255, 4)),
+  unpack(hsv2rgb_rainbow(0, 255, 8)),  unpack(hsv2rgb_rainbow(0, 255, 8)),
+  unpack(hsv2rgb_rainbow(0, 255, 16)), unpack(0xff0000), // CRGB::Red
+  unpack(0xff0000),                    unpack(0xff0000),
+  unpack(0xff8c00),                    unpack(0xff8c00), // CRGB::DarkOrange
+  unpack(0xffa500),                    unpack(0xffa500), // CRGB::Orange
+  unpack(0xffff00),                    unpack(0xffa500), // CRGB::Yellow
+  unpack(0xffff00),                    unpack(0xffff00),
+];
+
+function modeNoisefire(seg: Segment): void {
+  const { volumeSmth } = sampleSyntheticAudio(seg.now);
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  for (let i = 0; i < seg.length; i++) {
+    let index = perlin8(
+      Math.trunc((i * seg.speed) / 64) & 0xffff,
+      Math.trunc(
+        (Math.trunc((seg.now * seg.speed) / 64) * seg.length) / 255,
+      ) & 0xffff,
+    );
+    // scale so it darkens toward both ends; `256 - intensity` is never 0
+    index = Math.trunc(
+      ((255 - Math.trunc((i * 256) / seg.length)) * index) /
+        (256 - seg.intensity),
+    );
+
+    seg.setPixelColor(
+      i,
+      colorFromPalette(
+        NOISEFIRE_PALETTE,
+        index & 0xff,
+        // volumeSmth*2 overflows the uint8_t brightness parameter above 127
+        fToU8(volumeSmth * 2),
+        LINEARBLEND,
+      ),
+    );
+  }
+}
+
+// --- Noisemove (145) ---------------------------------------------------------
+// mode_noisemove (FX.cpp:7434): one pixel per FFT bin, positioned by 16-bit
+// Perlin noise. `perlin16(x, y)` is this sim's inoise16xy.
+function modeNoisemove(seg: Segment): void {
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+
+  const fadeoutDelay = Math.trunc((256 - seg.speed) / 96);
+  if (fadeoutDelay <= 1 || seg.call % fadeoutDelay === 0)
+    seg.fadeToBlackBy(4 + Math.trunc(seg.speed / 4));
+
+  const numBins = map(seg.intensity, 0, 255, 0, 16);
+  for (let i = 0; i < numBins; i++) {
+    const t = (seg.now * seg.speed) >>> 0; // uint32, as on device
+    let locn = inoise16xy((t + i * 50000) >>> 0, t);
+    // may land outside the strip; setPixelColor drops it, as firmware's
+    // unsigned wrap does
+    locn = map(locn, 7500, 58000, 0, seg.length - 1);
+    seg.setPixelColor(
+      locn,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(i * 64, false, false, 0),
+        (fftResult[i % 16] * 4) & 0xff,
+      ),
+    );
+  }
+}
+
+// --- Ripple Peak (148) -------------------------------------------------------
+// mode_ripplepeak (FX.cpp:6652): each detected beat launches a ripple that
+// spreads outward over 16 steps. Colour comes from log10 of the major peak.
+interface Ripple1D {
+  state: number;
+  color: number;
+  pos: number;
+}
+const ripplePeakState = new WeakMap<Segment, Ripple1D[]>();
+
+function modeRipplePeak(seg: Segment): void {
+  const MAXSTEPS = 16;
+  const maxRipples = 16;
+
+  let ripples = ripplePeakState.get(seg);
+  if (!ripples) {
+    ripples = Array.from({ length: maxRipples }, () => ({
+      state: 0,
+      color: 0,
+      pos: 0,
+    }));
+    ripplePeakState.set(seg, ripples);
+  }
+
+  const { samplePeak, fftMajorPeak } = sampleSyntheticAudio(seg.now);
+
+  seg.fade_out(240); // twice: "lower frame rate means less effective fading"
+  seg.fade_out(240);
+
+  for (let i = 0; i < Math.trunc(seg.intensity / 16); i++) {
+    const r = ripples[i];
+    if (samplePeak) r.state = 255;
+
+    switch (r.state) {
+      case 254: // inactive
+        break;
+      case 255: // initialize
+        r.pos = seg.rng.random16(seg.length);
+        r.color = fftMajorPeak > 1 ? Math.trunc(Math.log10(fftMajorPeak) * 128) & 0xff : 0;
+        r.state = 0;
+        break;
+      case 0:
+        seg.setPixelColor(
+          r.pos,
+          seg.color_from_palette(r.color, false, false, 0),
+        );
+        r.state++;
+        break;
+      case MAXSTEPS:
+        r.state = 254;
+        break;
+      default: {
+        // state is 1..15 here, so 2*255/state overflows the uint8_t blend
+        // amount at state 1 (510 -> 254) -- firmware behaviour, preserved
+        const blend = Math.trunc((2 * 255) / r.state) & 0xff;
+        const col = seg.color_from_palette(r.color, false, false, 0);
+        seg.setPixelColor(
+          (r.pos + r.state + seg.length) % seg.length,
+          color_blend(seg.color(1), col, blend),
+        );
+        seg.setPixelColor(
+          (r.pos - r.state + seg.length) % seg.length,
+          color_blend(seg.color(1), col, blend),
+        );
+        r.state++;
+        break;
+      }
+    }
+  }
+}
+
+// --- Freqmap (155) -----------------------------------------------------------
+// mode_freqmap (FX.cpp:7260): lights the single pixel whose position is the
+// log10 of the major peak; brightness is its magnitude.
+function modeFreqmap(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const { fftMajorPeak, myMagnitude } = sampleSyntheticAudio(seg.now);
+  const magnitude = myMagnitude / 4;
+  const peak = fftMajorPeak < 1 ? 1 : fftMajorPeak;
+
+  if (seg.call === 0) seg.fill(BLACK);
+  const fadeoutDelay = Math.trunc((256 - seg.speed) / 32);
+  if (fadeoutDelay <= 1 || seg.call % fadeoutDelay === 0)
+    seg.fade_out(seg.speed);
+
+  let locn = Math.trunc(
+    ((Math.log10(peak) - 1.78) * seg.length) / (MAX_FREQ_LOG10 - 1.78),
+  );
+  if (locn < 1) locn = 0; // avoid underflow
+  if (locn >= seg.length) locn = seg.length - 1;
+
+  let pixCol = fToUnsigned(
+    ((Math.log10(peak) - 1.78) * 255) / (MAX_FREQ_LOG10 - 1.78),
+  );
+  if (peak < 61) pixCol = 0; // handle underflow
+
+  seg.setPixelColor(
+    locn,
+    color_blend(
+      seg.color(1),
+      seg.color_from_palette(seg.intensity + pixCol, false, false, 0),
+      fToU8(magnitude),
+    ),
+  );
+}
+
+// --- DJ Light (159) ----------------------------------------------------------
+// mode_DJLight (FX.cpp:7231): an RGB triple taken straight from three FFT bins,
+// injected at the centre and shifted outward. Bypasses the palette.
+function modeDJLight(seg: Segment): void {
+  const mid = Math.trunc(seg.length / 2);
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+
+  if (seg.call === 0) seg.fill(BLACK);
+
+  const usNow = seg.now * 1000;
+  const secondHand =
+    (Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) + 1) & 0xff;
+  if (seg.aux0 !== secondHand) {
+    seg.aux0 = secondHand;
+
+    // firmware's comment: bin 16 would be out of bounds, so it uses 15
+    const r = fftResult[15] >> 1;
+    const g = fftResult[5] >> 1;
+    const b = fftResult[0] >> 1;
+    // CRGB::fadeToBlackBy(f) == nscale8(256-f) per channel (fastled_slim.h:334)
+    const scaleFixed = 256 - (map(fftResult[4], 0, 255, 255, 4) & 0xff);
+    const color = rgbw32(
+      (r * scaleFixed) >> 8,
+      (g * scaleFixed) >> 8,
+      (b * scaleFixed) >> 8,
+      0,
+    );
+    seg.setPixelColor(mid, color);
+
+    for (let i = seg.length - 1; i > mid; i--)
+      seg.setPixelColor(i, seg.getPixelColor(i - 1));
+    for (let i = 0; i < mid; i++)
+      seg.setPixelColor(i, seg.getPixelColor(i + 1));
+  }
+}
+
+// --- Blurz (163) -------------------------------------------------------------
+// mode_blurz (FX.cpp:7200): one FFT bin per tick painted at a random pixel,
+// then blurred.
+function modeBlurz(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+
+  if (seg.call === 0) {
+    seg.fill(BLACK);
+    seg.aux0 = 0;
+  }
+
+  const fadeoutDelay = Math.trunc((256 - seg.speed) / 32);
+  if (fadeoutDelay <= 1 || seg.call % fadeoutDelay === 0)
+    seg.fade_out(seg.speed);
+
+  seg.step += FRAMETIME;
+  const speedFormulaL = 5 + Math.trunc((50 * (255 - seg.speed)) / seg.length);
+  if (seg.step > speedFormulaL) {
+    const segLoc = seg.rng.random16(seg.length);
+    const band = fftResult[seg.aux0 % 16];
+    seg.setPixelColor(
+      segLoc,
+      color_blend(
+        seg.color(1),
+        seg.color_from_palette(
+          Math.trunc((2 * band * 240) / Math.max(1, seg.length - 1)),
+          false,
+          false,
+          0,
+        ),
+        (2 * band) & 0xff,
+      ),
+    );
+    seg.aux0 = (seg.aux0 + 1) % 16;
+
+    seg.step = 1;
+    // firmware note: blur > 210 gives an alternating pattern -- "very old bug",
+    // deliberately left in upstream, so left in here
+    seg.blur(seg.intensity);
+  }
+}
+
+// --- Rocktaves (185) ---------------------------------------------------------
+// mode_rocktaves (FX.cpp:7455): folds the major peak down to a single octave so
+// the same note always gets the same colour.
+function modeRocktaves(seg: Segment): void {
+  const { fftMajorPeak, myMagnitude } = sampleSyntheticAudio(seg.now);
+  const magnitude = myMagnitude / 16;
+
+  seg.fadeToBlackBy(16);
+
+  let frTemp = fftMajorPeak;
+  let octCount = 0;
+  let volTemp = fToU8(32 + magnitude * 1.5);
+  if (magnitude < 48) volTemp = 0; // squelch the background noise
+  if (magnitude > 144) volTemp = 255;
+
+  while (frTemp > 249) {
+    octCount++; // "should go up to 5"
+    frTemp = frTemp / 2;
+  }
+
+  frTemp -= 132; // base musical note of C3
+  frTemp = Math.abs(frTemp * 2.1); // compress the octave range into 0..255
+
+  let i = map(
+    beatsin8_t(8 + octCount * 4, seg.now, 0, 255, 0, octCount * 8),
+    0,
+    255,
+    0,
+    seg.length - 1,
+  );
+  i = Math.min(Math.max(i, 0), seg.length - 1);
+
+  seg.addPixelColor(
+    i,
+    color_blend(
+      seg.color(1),
+      seg.color_from_palette(fToU8(frTemp), false, false, 0),
+      volTemp,
+    ),
+  );
+}
+
+// --- PS GEQ 1D (212) ---------------------------------------------------------
+// mode_particle1DGEQ (FX.cpp:10356): one emitter per FFT bin, spread along the
+// strip. `hw_random()` -> seg.rng.random16().
+function modeParticleGeq1D(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 16, 255, true);
+    if (!ps) return fallbackStatic(seg);
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  const numSources = ps.numSources;
+  ps.setMotionBlur(seg.custom2);
+
+  const spacing = Math.trunc(ps.maxX / numSources);
+  for (let i = 0; i < numSources; i++) {
+    const src = ps.sources[i];
+    src.source.hue = (i * 16) & 0xff;
+    src.var = seg.speed >> 2;
+    src.minLife = 180 + (seg.intensity >> 1);
+    src.maxLife = 240 + seg.intensity;
+    src.sat = 255;
+    src.size = seg.custom1;
+    src.source.x = (spacing >> 1) + spacing * i;
+  }
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (ps.particles[i].ttl > 20) ps.particles[i].ttl -= 20;
+    else ps.particles[i].ttl = 0;
+  }
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+
+  // start on a random bin so the available particles are shared out fairly
+  let bin = seg.rng.random16(numSources);
+  const threshold = 300 - seg.intensity;
+
+  for (let i = 0; i < numSources; i++) {
+    bin++;
+    bin = bin % numSources;
+    let emitparticle = false;
+    if (fftResult[bin] > threshold) {
+      emitparticle = true;
+    } else if (fftResult[bin] > 0) {
+      const restvolume = ((threshold - fftResult[bin]) >> 2) + 2;
+      if (seg.rng.random16() % restvolume === 0) emitparticle = true;
+    }
+    if (emitparticle) ps.sprayEmit(ps.sources[bin]);
+  }
+
+  ps.update();
+}
+
+// --- PS Sonic Stream (214) ---------------------------------------------------
+// mode_particle1DsonicStream (FX.cpp:10491): one emitter fires a particle down
+// the strip whenever the selected bin crosses a (optionally adaptive) threshold.
+function modeParticleSonicStream(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1, 255, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+    ps.sources[0].source.x = 0;
+    ps.sources[0].var = 0;
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setMotionBlur(20 + (seg.custom2 >> 1));
+  ps.setSmearBlur(200);
+  ps.sources[0].v = 5 + (seg.speed >> 2);
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+  const baseBin = seg.custom3 >> 1;
+  let loudness = fftResult[baseBin];
+  let mids = 0;
+  if (seg.check1)
+    mids = sqrt32bw(
+      fftResult[5] +
+        fftResult[6] +
+        fftResult[7] +
+        fftResult[8] +
+        fftResult[9] +
+        fftResult[10],
+    );
+  if (baseBin > 12) loudness = loudness << 2; // better detection up high
+
+  let threshold = 140 - (seg.intensity >> 1);
+  if (seg.check2) {
+    // low-pass filter over the bin, used as an adaptive threshold
+    seg.step = (seg.step * 31500 + loudness * (32768 - 31500)) >> 15;
+    threshold = 20 + (threshold >> 1) + seg.step;
+  }
+
+  const hueincrement = seg.custom1 >> 3;
+  ps.sources[0].sat = seg.custom1 > 0 ? 255 : 0;
+  ps.setColorByPosition(seg.custom1 === 255);
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (!ps.sources[0].sourceFlags.perpetual) {
+      if (ps.particles[i].ttl > 2) ps.particles[i].ttl -= 2;
+      else ps.particles[i].ttl = 0;
+    }
+    if (seg.check1) {
+      const shift =
+        (mids *
+          perlin8(
+            (ps.particles[i].x << 2) & 0xffff,
+            (seg.step << 2) & 0xffff,
+          )) >>
+        9;
+      ps.particles[i].hue = (ps.particles[i].hue + shift) & 0xff;
+    }
+  }
+
+  if (loudness > threshold) {
+    seg.aux0 = (seg.aux0 + hueincrement) & 0xffff;
+    ps.sources[0].minLife = 100 + ((seg.intensity * loudness * loudness) >> 13);
+    ps.sources[0].maxLife = ps.sources[0].minLife;
+    ps.sources[0].source.hue = seg.aux0 & 0xff;
+    ps.sources[0].size = seg.speed;
+    // only emit once the last-emitted particle has moved clear (or died).
+    // aux1 is only ever written from sprayEmit, so the undefined branch is a
+    // TS-side guard, not a firmware path.
+    const last = ps.particles[seg.aux1];
+    if (
+      last === undefined ||
+      last.x > 3 * PS_P_RADIUS_1D ||
+      last.ttl === 0
+    ) {
+      const partindex = ps.sprayEmit(ps.sources[0]);
+      if (partindex >= 0) seg.aux1 = partindex;
+    }
+  } else {
+    loudness = 0; // required for push mode
+  }
+
+  ps.update();
+
+  if (seg.check3) {
+    // push mode
+    ps.sources[0].sourceFlags.perpetual = true;
+    ps.applyFriction(1);
+    const movestep = ((seg.speed + 2) * loudness) >> 10;
+    if (movestep) {
+      for (let i = 0; i < ps.usedParticles; i++) {
+        if (ps.particles[i].ttl) {
+          ps.particles[i].x += movestep;
+          ps.particles[i].vx = 10 + (seg.speed >> 4);
+        }
+      }
+    }
+  } else {
+    ps.sources[0].sourceFlags.perpetual = false;
+    // move all particles again, to allow faster speeds
+    for (let i = 0; i < ps.usedParticles; i++) {
+      if (ps.particles[i].vx === 0) ps.particles[i].vx = ps.sources[0].v;
+      ps.particleMoveUpdate(
+        ps.particles[i],
+        ps.particleFlags[i],
+        null,
+        ps.advPartProps ? ps.advPartProps[i] : null,
+      );
+    }
+  }
+}
+
+// --- PS Sonic Boom (215) -----------------------------------------------------
+// mode_particle1DsonicBoom (FX.cpp:10594): each detected beat explodes a burst
+// of particles at a position chosen by the Position slider.
+function modeParticleSonicBoom(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1, 255, true);
+    if (!ps) return fallbackStatic(seg);
+    ps.setKillOutOfBounds(true);
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setMotionBlur(seg.check3 ? 180 : 0);
+  ps.setSmearBlur(seg.check3 ? 64 : 0);
+  ps.sources[0].var = map(seg.speed, 0, 255, 10, 127);
+
+  const { fftResult } = sampleSyntheticAudio(seg.now);
+  const baseBin = seg.custom3 >> 1;
+  let loudness = fftResult[baseBin];
+  let mids = 0;
+  if (seg.check1)
+    mids = sqrt32bw(
+      fftResult[5] +
+        fftResult[6] +
+        fftResult[7] +
+        fftResult[8] +
+        fftResult[9] +
+        fftResult[10],
+    );
+
+  if (baseBin > 12) loudness = loudness << 2;
+  let threshold = 150 - (seg.intensity >> 1);
+  if (seg.check2) {
+    seg.step = (seg.step * 31500 + loudness * (32768 - 31500)) >> 15;
+    threshold = 20 + (threshold >> 1) + seg.step;
+  }
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (seg.check1) {
+      const shift =
+        (mids *
+          perlin8(
+            (ps.particles[i].x << 2) & 0xffff,
+            (seg.step << 2) & 0xffff,
+          )) >>
+        9;
+      ps.particles[i].hue = (ps.particles[i].hue + shift) & 0xff;
+    }
+    if (ps.particles[i].ttl > 16) ps.particles[i].ttl -= 16;
+  }
+
+  if (loudness > threshold) {
+    if (seg.aux1 === 0) {
+      // edge: runs once per "beat"
+      if (seg.custom2 < 128) {
+        ps.sources[0].source.x = map(seg.custom2, 0, 127, 0, ps.maxX);
+      } else if (seg.custom2 < 255) {
+        const step = Math.trunc(ps.maxX / ((270 - seg.custom2) >> 3));
+        ps.sources[0].source.x = (ps.sources[0].source.x + step) % ps.maxX;
+        // align so the first position is half a step in
+        if (ps.sources[0].source.x < step)
+          ps.sources[0].source.x = step >> 1;
+      } else {
+        // hw_random(maxX) is 32-bit upstream; random16 covers maxX for any
+        // strip this sim renders (maxX = length*32-1)
+        ps.sources[0].source.x = seg.rng.random16(ps.maxX);
+      }
+
+      ps.sources[0].sat = seg.custom1 > 0 ? 255 : 0;
+      if (seg.custom1 === 255)
+        seg.aux0 = map(ps.sources[0].source.x, 0, ps.maxX, 0, 255);
+      else if (seg.custom1 > 0)
+        seg.aux0 = (seg.aux0 + (seg.custom1 >> 1)) & 0xffff;
+    }
+    seg.aux1 = 1;
+
+    ps.sources[0].minLife = 200;
+    ps.sources[0].maxLife =
+      ps.sources[0].minLife + ((seg.intensity * loudness * loudness) >> 13);
+    ps.sources[0].source.hue = seg.aux0 & 0xff;
+    let explosionsize = 4 + (ps.maxXpixel >> 2);
+    explosionsize = seg.rng.random16((explosionsize * loudness) >> 10);
+    for (let e = 0; e < explosionsize; e++) ps.sprayEmit(ps.sources[0]);
+  } else {
+    seg.aux1 = 0; // reset edge detection
+  }
+
+  ps.update();
+}
+
+// --- PS Springy (216) --------------------------------------------------------
+// mode_particleSpringy (FX.cpp:10683): a chain of particles joined by springs,
+// anchored at both ends. Excited by a periodic pulse, a sine, random kicks, or
+// (check3) an FFT bin.
+function modeParticleSpringy(seg: Segment): void {
+  let ps: ParticleSystem1D | null;
+  if (seg.call === 0) {
+    ps = initParticleSystem1D(seg, 1, 128, true);
+    if (!ps) return fallbackStatic(seg);
+    seg.aux0 = 0xffff; // invalidate settings
+    seg.aux1 = 0xffff;
+  } else {
+    ps = getParticleSystem1D(seg);
+    if (!ps) return fallbackStatic(seg);
+  }
+
+  ps.updateSystem();
+  ps.setMotionBlur(seg.check1 ? 220 : 0);
+  ps.setSmearBlur(50);
+  ps.setUsedParticles(
+    map(seg.custom1, 0, 255, 30 >> (seg.check2 ? 1 : 0), 255 >> (seg.check2 ? 2 : 0)),
+  );
+  const adv = ps.advPartProps;
+  if (!adv) return fallbackStatic(seg);
+
+  const springlength = Math.trunc(ps.maxX / ps.usedParticles);
+  const springK = map(seg.speed, 0, 255, 5, 35);
+
+  const settingssum = seg.custom1 + (seg.check2 ? 1 : 0);
+  ps.setParticleSize(seg.check2 ? 120 : 1);
+
+  if (seg.aux0 !== settingssum) {
+    for (let i = 0; i < ps.usedParticles; i++) {
+      adv[i].sat = 255;
+      ps.particles[i].x = (i + 1) * Math.trunc(ps.maxX / ps.usedParticles);
+    }
+    seg.aux0 = settingssum;
+  }
+  const dxlimit = (2 + ((255 - seg.speed) >> 5)) * springlength;
+
+  const springforce = new Array<number>(ps.usedParticles).fill(0);
+
+  // spring forces, plus position limiting so the chain cannot overstretch
+  if (ps.particles[0].x < -springlength) ps.particles[0].x = -springlength;
+  else if (ps.particles[0].x > dxlimit) ps.particles[0].x = dxlimit;
+  springforce[0] += ((springlength >> 1) - ps.particles[0].x) * springK;
+
+  for (let i = 1; i < ps.usedParticles; i++) {
+    // reorder out-of-order particles, or the chain descends into chaos
+    if (ps.particles[i].x < ps.particles[i - 1].x) {
+      const tmp = ps.particles[i].x;
+      ps.particles[i].x = ps.particles[i - 1].x;
+      ps.particles[i - 1].x = tmp;
+    }
+    let dx = ps.particles[i].x - ps.particles[i - 1].x;
+    if (dx > dxlimit) {
+      ps.particles[i].x = ps.particles[i - 1].x + dxlimit;
+      dx = dxlimit;
+    }
+    const dxleft = springlength - dx;
+    springforce[i] += dxleft * springK;
+    springforce[i - 1] -= dxleft * springK;
+    if (i === ps.usedParticles - 1) {
+      if (ps.particles[i].x >= ps.maxX + springlength)
+        ps.particles[i].x = ps.maxX + springlength;
+      const dxright = (springlength >> 1) - (ps.maxX - ps.particles[i].x);
+      springforce[i] -= dxright * springK;
+    }
+  }
+
+  // firmware passes each particle's own forcecounter by reference; the engine
+  // here takes a {v} box, so it is loaded and stored around each call
+  const fc = { v: 0 };
+  const dampenoscillations = seg.call % (9 - (seg.speed >> 5)) === 0;
+  for (let i = 0; i < ps.usedParticles; i++) {
+    // integer divide, not a shift: springforce can be negative
+    springforce[i] = Math.trunc(springforce[i] / 64);
+    const maxforce = 120;
+    springforce[i] =
+      springforce[i] > maxforce
+        ? maxforce
+        : springforce[i] < -maxforce
+          ? -maxforce
+          : springforce[i];
+    fc.v = adv[i].forcecounter;
+    ps.applyForceOne(ps.particles[i], springforce[i], fc);
+    adv[i].forcecounter = fc.v;
+    if (dampenoscillations) {
+      if (
+        Math.abs(ps.particles[i].vx) < 3 &&
+        Math.abs(springforce[i]) < springK >> 2
+      )
+        ps.particles[i].vx = Math.trunc((ps.particles[i].vx * 254) / 256);
+    }
+    ps.particles[i].ttl = 300; // reset ttl, cannot use perpetual
+  }
+
+  if (seg.call % (65 - ((seg.intensity * (1 + (seg.speed >> 3))) >> 7)) === 0)
+    ps.applyFriction(seg.intensity >> 2);
+
+  // small restoring force, so particles return to rest even under heavy damping
+  for (let i = 1; i < ps.usedParticles - 1; i++) {
+    const restposition = (springlength >> 1) + i * springlength;
+    const dx = restposition - ps.particles[i].x;
+    fc.v = adv[i].forcecounter;
+    ps.applyForceOne(ps.particles[i], dx > 0 ? 1 : dx < 0 ? -1 : 0, fc);
+    adv[i].forcecounter = fc.v;
+  }
+
+  if (seg.check3) {
+    // AR mode: custom3 selects the band that kicks the centre particle
+    const { fftResult } = sampleSyntheticAudio(seg.now);
+    const baseBin = map(seg.custom3, 0, 31, 0, 14);
+    const loudness = fftResult[baseBin] + fftResult[baseBin + 1];
+    const threshold = 80;
+    if (loudness > threshold) {
+      const mid = ps.usedParticles >> 1;
+      const offset = (ps.maxX >> 1) - ps.particles[mid].x;
+      if (Math.abs(offset) < ps.maxX >> 5)
+        ps.particles[mid].vx =
+          (ps.particles[mid].vx > 0 ? 1 : -1) * (loudness >> 3);
+    }
+  } else if (seg.custom3 <= 10) {
+    // periodic pulse: 0-5 at the start, 6-10 at the centre
+    if (seg.now > seg.step) {
+      const speed = seg.custom3 > 5 ? seg.custom3 - 6 : seg.custom3;
+      seg.step = seg.now + 7500 - ((seg.speed << 3) + (speed << 10));
+      const amplitude = 40 + (seg.custom1 >> 2);
+      const index = seg.custom3 > 5 ? Math.trunc(ps.usedParticles / 2) : 0;
+      ps.particles[index].vx += amplitude;
+    }
+  } else if (seg.custom3 <= 30) {
+    // sinusoidal drive: 11-20 at the start, 21-30 at the centre
+    const index = seg.custom3 > 20 ? Math.trunc(ps.usedParticles / 2) : 0;
+    const restposition = index > 0 ? ps.maxX >> 1 : 0;
+    let amplitude = 5 + (seg.custom1 >> 2);
+    const speed = seg.custom3 - 10 - (index ? 10 : 0);
+    const phase = (seg.now * ((1 + (seg.speed >> 4)) * speed)) | 0; // int32
+    if (seg.check2) amplitude <<= 1;
+    ps.particles[index].x = restposition + ((sin16(phase & 0xffff) * amplitude) >> 12);
+  } else if (seg.rng.random16() < 656) {
+    // ~1% chance of a random kick
+    let amplitude = 60;
+    if (seg.check2) amplitude <<= 1;
+    ps.particles[ps.usedParticles >> 1].vx +=
+      seg.rng.random16(amplitude << 1) - amplitude;
+  }
+
+  for (let i = 0; i < ps.usedParticles; i++) {
+    if (seg.custom2 === 255) {
+      // hue from speed; the int8 round-trip is firmware's, and dumps small
+      // values so slow particles don't flicker
+      let speedclr = (s8i(Math.abs(ps.particles[i].vx)) >> 2) << 4;
+      if (speedclr > 240) speedclr = 240;
+      ps.particles[i].hue = speedclr & 0xff;
+    } else if (seg.custom2 > 0) {
+      ps.particles[i].hue = (i * (seg.custom2 >> 2)) & 0xff;
+    } else {
+      // hue from local density
+      let deviation: number;
+      if (i === 0) {
+        deviation = Math.trunc(springlength / 2) - ps.particles[i].x;
+      } else if (i === ps.usedParticles - 1) {
+        deviation =
+          Math.trunc(springlength / 2) - (ps.maxX - ps.particles[i].x);
+      } else {
+        const leftDx = ps.particles[i].x - ps.particles[i - 1].x;
+        const rightDx = ps.particles[i + 1].x - ps.particles[i].x;
+        let avgDistance = (leftDx + rightDx) >> 1;
+        if (avgDistance < 0) avgDistance = 0;
+        deviation = springlength - avgDistance;
+      }
+      deviation = Math.min(Math.max(deviation, -127), 112);
+      ps.particles[i].hue = (127 + deviation) & 0xff;
+    }
+  }
+
   ps.update();
 }
 

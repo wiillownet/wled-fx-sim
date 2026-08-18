@@ -52,12 +52,15 @@ not model firmware expanding a 1D effect across a 2D segment.
 
 ### Audio-reactive effects
 
-Nine 2D effects (GEQ 139, Funky Plank 160, Waverly 165, Swirl 175, Akemi 186, and
-PS Spray/GEQ 2D/GEQ Nova/Blobs 197-201) read WLED's audio globals on device. This
-package performs **no audio analysis** — no microphone, no FFT, no beat detection,
-and no way to feed it real audio. It drives those bodies from a built-in synthetic
-fixture instead: a deterministic, looping 4-second 120 BPM drum-and-bass phrase
-standing in for `volumeSmth` and the 16-band `fftResult`.
+Thirty-seven effects read WLED's audio globals on device: nine 2D (GEQ 139, Funky
+Plank 160, Waverly 165, Swirl 175, Akemi 186, and PS Spray/GEQ 2D/GEQ Nova/Blobs
+197-201) and twenty-eight 1D (128-138, 140-141, 143-145, 148, 155-159, 163, 185,
+and PS GEQ 1D/Sonic Stream/Sonic Boom/Springy 212-216). This package performs **no
+audio analysis** — no microphone, no FFT, no beat detection, and no way to feed it
+real audio. It drives those bodies from a built-in synthetic fixture instead: a
+deterministic, looping 4-second 120 BPM drum-and-bass phrase standing in for the
+`um_data` channels they read (`volumeSmth`, `volumeRaw`, the 16-band `fftResult`,
+`samplePeak`, `FFT_MajorPeak` and `my_magnitude`).
 
 So they animate, and they animate *plausibly*, but they are reacting to a canned
 pattern rather than to anything you played. Treat those previews as a

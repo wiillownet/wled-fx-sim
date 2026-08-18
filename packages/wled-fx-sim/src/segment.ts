@@ -108,6 +108,11 @@ export class Segment {
     return this.pixels[i];
   }
 
+  /** addPixelColor(n, c): additive blend into a pixel -- WLED FX_fcn.cpp. */
+  addPixelColor(i: number, c: number, preserveCR = true): void {
+    this.setPixelColor(i, color_add(this.getPixelColor(i), c, preserveCR));
+  }
+
   /** SEGCOLOR(x) -- one of the P/S/T slots. */
   color(x: number): number {
     return this.colors[x] ?? 0;
