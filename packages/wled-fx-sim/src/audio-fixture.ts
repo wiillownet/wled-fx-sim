@@ -36,7 +36,7 @@
  */
 
 /** One sampled frame of the synthetic fixture (see the slot map above). */
-export interface SyntheticAudioFrame {
+interface SyntheticAudioFrame {
   /** 0-255, stand-in for WLED's SEGMENT-facing volumeSmth (slot 0). */
   volumeSmth: number;
   /**
@@ -132,7 +132,9 @@ const HAT_WEIGHT = 1.4;
 // port-fidelity one.
 const MAGNITUDE_SCALE = 4;
 
-function clamp8(v: number): number {
+// Rounds, unlike index.ts's same-shaped clamp8 which truncates -- these
+// envelopes are floats, and rounding is what keeps the band energies centred.
+function roundToU8(v: number): number {
   return Math.max(0, Math.min(255, Math.round(v)));
 }
 
@@ -159,7 +161,7 @@ export function sampleSyntheticAudio(nowMs: number): SyntheticAudioFrame {
   const bassNote = BASS_NOTES[step];
   const bassBody = bassNote > 0 ? 60 + bassNote * 40 : 20;
   for (let i = 0; i < 4; i++) {
-    fftResult[i] = clamp8(Math.max(kickEnv, bassBody) - i * 10);
+    fftResult[i] = roundToU8(Math.max(kickEnv, bassBody) - i * 10);
   }
 
   // Bands 4-9: mids -- snare/clap hits plus the bassline's melodic contour.
@@ -169,18 +171,18 @@ export function sampleSyntheticAudio(nowMs: number): SyntheticAudioFrame {
   for (let i = 4; i < 10; i++) {
     const contour =
       40 + bassNote * 25 + 20 * Math.sin((i - 4) * 0.8 + t * 0.002);
-    fftResult[i] = clamp8(Math.max(snareEnv, contour));
+    fftResult[i] = roundToU8(Math.max(snareEnv, contour));
   }
 
   // Bands 10-15: highs -- a hi-hat on every eighth note, accented on the beat.
   const hatAccent = step % 2 === 0 ? 140 : 90;
   const hatEnv = hatAccent * Math.exp(-stepPhase * 14);
   for (let i = 10; i < 16; i++) {
-    fftResult[i] = clamp8(hatEnv - (i - 10) * 8 + 10);
+    fftResult[i] = roundToU8(hatEnv - (i - 10) * 8 + 10);
   }
 
-  const volumeSmth = clamp8(Math.max(kickEnv, snareEnv, hatEnv * 0.6, 30));
-  const volumeRaw = clamp8(Math.max(kickEnv, snareEnv, hatEnv));
+  const volumeSmth = roundToU8(Math.max(kickEnv, snareEnv, hatEnv * 0.6, 30));
+  const volumeRaw = roundToU8(Math.max(kickEnv, snareEnv, hatEnv));
 
   // A hit lands in this frame's window (see PEAK_WINDOW_MS above).
   const samplePeak = PEAK_TIMES.some((p) => {

@@ -212,7 +212,7 @@ export function color_add(c1: number, c2: number, preserveCR = false): number {
       const g = wg & 0xffff;
       let maxval = r > g ? (r > b ? r : b) : g > b ? g : b;
       maxval = w > maxval ? w : maxval;
-      const scale = ((255 << 8) / maxval) | 0;
+      const scale = Math.trunc((255 << 8) / maxval);
       rb = ((rb * scale) >>> 8) & TWO_CH;
       wg = (wg * scale) & WG_MASK;
     } else {
@@ -551,8 +551,9 @@ export function inoise16xy(x: number, y: number): number {
 // integer implementation (by @dedehai): a hash-based gradient noise with a
 // cubic smoothstep, ported faithfully since effect motion depends on its
 // exact curve, not just "some noise." Only the 2D uint8 form (`perlin8(x,y)`)
-// is implemented here -- `PERLIN_SHIFT`/`hashToGradient` are the same
-// primitives the 3D `inoise16` above already declares, reused as-is.
+// is implemented here -- `PERLIN_SHIFT`/`hashToGradient`/`smoothstep` are the
+// same primitives the 3D `inoise16` above already declares, reused as-is
+// (upstream likewise has a single smoothstep, util.cpp:1139).
 
 /** 2D corner gradient dot-product from hashed integer coordinates -- gradient2D. */
 function gradient2D(x0: number, dx: number, y0: number, dy: number): number {
@@ -564,13 +565,6 @@ function gradient2D(x0: number, dx: number, y0: number, dy: number): number {
     (hashToGradient(h) * dx + hashToGradient(h >>> PERLIN_SHIFT) * dy) >>
     (1 + PERLIN_SHIFT)
   );
-}
-
-/** Fast cubic smoothstep t*(3-2t), fixed-point -- util.cpp smoothstep. */
-function perlinSmoothstep(t: number): number {
-  const tSquared = (t * t) >>> 16;
-  const factor = (3 << 16) - (t << 1);
-  return (tSquared * factor) >>> 18;
 }
 
 /** 2D Perlin noise, 16.16 fixed-point inputs, `is16bit` wraps corners at 0xFF
@@ -592,8 +586,8 @@ function perlin2DRaw(x: number, y: number, is16bit: boolean): number {
   const g10 = gradient2D(x1, dx1, y0, dy0);
   const g01 = gradient2D(x0, dx0, y1, dy1);
   const g11 = gradient2D(x1, dx1, y1, dy1);
-  const tx = perlinSmoothstep(dx0);
-  const ty = perlinSmoothstep(dy0);
+  const tx = smoothstep(dx0);
+  const ty = smoothstep(dy0);
   const nx0 = lerpPerlin(g00, g10, tx);
   const nx1 = lerpPerlin(g01, g11, tx);
   return lerpPerlin(nx0, nx1, ty);
