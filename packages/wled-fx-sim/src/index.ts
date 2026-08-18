@@ -141,13 +141,6 @@ export function portedFxIds(): number[] {
     .sort((a, b) => a - b);
 }
 
-/** The 1D effect body for `fxId`, or undefined if it has none (2D bodies are internal). */
-export function getEffectSim(
-  fxId: number,
-): ((seg: Segment) => void) | undefined {
-  return EFFECT_SIMS[fxId];
-}
-
 /**
  * Build a stateful simulator for one effect + parameter set. Throws if `fxId`
  * has no port -- callers should gate on isPorted() and fall back to the CSS

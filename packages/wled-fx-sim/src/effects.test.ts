@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import {
   createEffectSim,
   FRAMETIME,
-  getEffectSim,
   is2DEffect,
   isPorted,
   portedFxIds,
@@ -45,7 +44,6 @@ describe('registry surface', () => {
     expect(ids.length).toBeGreaterThanOrEqual(20);
     for (const id of ids) expect(isPorted(id)).toBe(true);
     expect(isPorted(999)).toBe(false);
-    expect(getEffectSim(999)).toBeUndefined();
   });
 
   it('createEffectSim throws for an unported id (never faked)', () => {
