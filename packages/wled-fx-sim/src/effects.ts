@@ -10902,8 +10902,11 @@ function modeNoisefire(seg: Segment): void {
   for (let i = 0; i < seg.length; i++) {
     let index = perlin8(
       Math.trunc((i * seg.speed) / 64) & 0xffff,
+      // uint32 on device, so fold at each multiply -- masking only at the end
+      // can't recover bits that were never wrapped (cf. modeNoisemove)
       Math.trunc(
-        (Math.trunc((seg.now * seg.speed) / 64) * seg.length) / 255,
+        ((Math.trunc(((seg.now * seg.speed) >>> 0) / 64) * seg.length) >>> 0) /
+          255,
       ) & 0xffff,
     );
     // scale so it darkens toward both ends; `256 - intensity` is never 0
