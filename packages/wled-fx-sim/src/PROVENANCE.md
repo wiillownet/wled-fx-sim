@@ -47,6 +47,7 @@ package (see plan §5, Decision B: one monorepo, two packages).
 | `palette-data.generated.ts` | `palettes.cpp` baked table (ids 6-71) | **three-way** — 4 MIT / 31 cpt-city / 16 EUPL (resolved, see flag 1) | n/a |
 | `particles-1d.ts` | `FXparticleSystem.cpp/.h` 1D engine + PS-1D effects (fx 202-213) | EUPL | **n/a** — no WS2812FX ancestor |
 | `particles-2d.ts` | `FXparticleSystem.cpp/.h` 2D engine + PS-2D effects | EUPL | **n/a** — no WS2812FX ancestor |
+| `particles-common.ts` | `FXparticleSystem.cpp/.h` physics helpers shared by both engines (`limitSpeed`, `calcForce_dv`, `checkBoundsAndWrap`) | EUPL | **n/a** — no WS2812FX ancestor |
 | `effects.ts` | `FX.cpp` `mode_*` bodies (1D + 2D) | EUPL (presumptive) | **per-effect diff pending** for the simple early set only |
 | `audio-fixture.ts` | **none** — sim-original synthetic band-energy stand-in | authored | n/a |
 | `index.ts` | sim-original public surface (no port) | authored | n/a |

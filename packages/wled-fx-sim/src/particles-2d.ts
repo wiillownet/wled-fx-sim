@@ -33,6 +33,13 @@ import {
   fast_color_scaleAdd,
   sin16_t,
 } from './lib8.js';
+import {
+  applySaturation,
+  calcForce_dv,
+  checkBoundsAndWrap,
+  limitSpeed,
+  PS_P_MAXSPEED,
+} from './particles-common.js';
 
 // --- constants (FXparticleSystem.h, ESP32 defaults) --------------------------
 export const PS_P_RADIUS = 64; // subpixel resolution per pixel
@@ -41,7 +48,6 @@ const PS_P_RADIUS_SHIFT = 6;
 const PS_P_SURFACE = 12; // 2^12 = 64^2
 export const PS_P_MINHARDRADIUS = 64;
 const PS_P_MINSURFACEHARDNESS = 128;
-const PS_P_MAXSPEED = 120;
 const MAXPARTICLES_2D = 2048;
 const MAXSOURCES_2D = 128;
 const SOURCEREDUCTIONFACTOR = 4;
@@ -158,60 +164,6 @@ function newSizeControl2D(): PSsizeControl2D {
 const s8 = (v: number): number => (v << 24) >> 24;
 const s16 = (v: number): number => (v << 16) >> 16;
 const u16 = (v: number): number => v & 0xffff;
-
-function limitSpeed(speed: number): number {
-  return speed > PS_P_MAXSPEED
-    ? PS_P_MAXSPEED
-    : speed < -PS_P_MAXSPEED
-      ? -PS_P_MAXSPEED
-      : speed;
-}
-
-// force is 3.4 fixed point; small forces accumulate via the counter
-function calcForce_dv(force: number, counter: { v: number }): number {
-  if (force === 0) return 0;
-  const forceAbs = Math.abs(force);
-  let dv = 0;
-  if (forceAbs < 16) {
-    counter.v = (counter.v + forceAbs) & 0xff;
-    if (counter.v > 15) {
-      counter.v -= 16;
-      dv = force < 0 ? -1 : 1;
-    }
-  } else {
-    dv = Math.trunc(force / 16);
-  }
-  return dv;
-}
-
-// returns false if the particle has fully left the axis (wraps in place if set)
-function checkBoundsAndWrap(
-  pos: { v: number },
-  max: number,
-  particleradius: number,
-  wrap: boolean,
-): boolean {
-  if (pos.v >>> 0 > max >>> 0) {
-    if (wrap) {
-      pos.v = pos.v % (max + 1);
-      if (pos.v < 0) pos.v += max + 1;
-    } else if (pos.v < -particleradius || pos.v > max + particleradius) {
-      return false;
-    }
-  }
-  return true;
-}
-
-// desaturate a packed color toward its luma (stand-in for the CHSV32 roundtrip)
-function applySaturation(color: number, sat: number): number {
-  if (sat >= 255) return color;
-  const r = R(color);
-  const g = G(color);
-  const b = B(color);
-  const luma = (r * 77 + g * 150 + b * 29) >> 8;
-  const mix = (c: number): number => (c * sat + luma * (255 - sat)) >> 8;
-  return ((mix(r) << 16) | (mix(g) << 8) | mix(b)) >>> 0;
-}
 
 // linear-falloff ellipse brightness (FXparticleSystem.h calculateEllipseBrightness)
 function calculateEllipseBrightness(
