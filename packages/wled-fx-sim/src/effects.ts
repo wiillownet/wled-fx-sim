@@ -314,7 +314,7 @@ function scanBase(seg: Segment, dual: boolean): void {
   const perc = seg.now % cycleTime;
   const prog = Math.trunc((perc * 65535) / cycleTime);
   const size = 1 + ((seg.intensity * seg.length) >> 9);
-  const ledIndex = (prog * (seg.length * 2 - size * 2)) >> 16;
+  const ledIndex = (prog * (seg.length * 2 - size * 2)) >>> 16;
 
   if (!seg.check2) seg.fill(seg.color(1));
 
@@ -558,7 +558,7 @@ function chase(
   isRandom = false,
 ): void {
   const counter = (seg.now * ((seg.speed >> 2) + 1)) & 0xffff;
-  const a = (counter * seg.length) >> 16;
+  const a = (counter * seg.length) >>> 16;
 
   if (isRandom) {
     if (a < seg.step) {
@@ -781,7 +781,7 @@ function modeLarsonScanner(seg: Segment): void {
 function modeComet(seg: Segment): void {
   if (seg.length <= 1) return fallbackStatic(seg);
   const counter = (seg.now * ((seg.speed >> 2) + 1)) & 0xffff;
-  const index = (counter * seg.length) >> 16;
+  const index = (counter * seg.length) >>> 16;
   if (seg.call === 0) seg.aux0 = index;
 
   seg.fade_out(seg.intensity);
@@ -839,7 +839,7 @@ function modeFire2012(seg: Segment): void {
   if (seg.length <= 1) return fallbackStatic(seg);
   const heat = seg.allocateData(seg.length);
   const it = seg.now >> 5;
-  const ignition = Math.max(3, Math.trunc(seg.length / 10));
+  const ignition = Math.max(3, Math.trunc(seg.length / 10)) & 0xff;
 
   // Step 1: cool down
   for (let i = 0; i < seg.length; i++) {
@@ -9990,7 +9990,7 @@ function modeParticleSpray2D(seg: Segment2D): void {
     ps.setBounceY(true);
     ps.setMotionBlur(200);
     ps.setSmearBlur(10);
-    ps.sources[0].source.hue = seg.rng.random16();
+    ps.sources[0].source.hue = seg.rng.random16() & 0xff; // uint8_t field upstream
     ps.sources[0].sourceFlags.collide = true;
     ps.sources[0].var = 3;
   } else {
