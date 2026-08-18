@@ -886,49 +886,76 @@ function modeFire2012(seg: Segment): void {
 function modeMeteor(seg: Segment): void {
   if (seg.length <= 1) return fallbackStatic(seg);
   const trail = seg.allocateData(seg.length);
+  const meteorSmooth = seg.check3;
   const meteorSize = 1 + Math.trunc(seg.length / 20);
 
-  const counter = seg.now * ((seg.speed >> 2) + 8);
-  const meteorstart = ((counter * seg.length) >>> 0) >>> 16;
+  let meteorstart: number;
+  if (meteorSmooth) {
+    meteorstart = map((seg.step >>> 6) & 0xff, 0, 255, 0, seg.length - 1);
+  } else {
+    const counter = seg.now * ((seg.speed >> 2) + 8);
+    meteorstart = ((counter * seg.length) >>> 0) >>> 16;
+  }
 
   const maxv = seg.palette === 5 || !seg.check1 ? 240 : 255;
 
   for (let i = 0; i < seg.length; i++) {
     if (seg.rng.random8() <= 255 - seg.intensity) {
-      trail[i] = scale8(trail[i], 128 + seg.rng.random8(127));
-      let index: number;
-      let idx = 255;
-      let bri: number;
-      if (!seg.check1) {
-        idx = 0;
-        index = map(i, 0, seg.length, 0, maxv);
-        bri = trail[i];
+      let col: number;
+      if (meteorSmooth) {
+        if (trail[i] > 0) {
+          // change each time between -20 and +4
+          const change = trail[i] + 4 - seg.rng.random8(24);
+          trail[i] = Math.max(0, Math.min(maxv, change));
+        }
+        col = seg.check1
+          ? seg.color_from_palette(i, true, false, 0, trail[i])
+          : seg.color_from_palette(trail[i], false, true, 255);
       } else {
-        index = trail[i];
-        bri = seg.palette === 35 || seg.palette === 36 ? 255 : trail[i];
+        trail[i] = scale8(trail[i], 128 + seg.rng.random8(127));
+        let index: number;
+        let idx = 255;
+        let bri: number;
+        if (!seg.check1) {
+          idx = 0;
+          index = map(i, 0, seg.length, 0, maxv);
+          bri = trail[i];
+        } else {
+          index = trail[i];
+          bri = seg.palette === 35 || seg.palette === 36 ? 255 : trail[i];
+        }
+        col = seg.color_from_palette(index, false, false, idx, bri);
       }
-      seg.setPixelColor(
-        i,
-        seg.color_from_palette(index, false, false, idx, bri),
-      );
+      seg.setPixelColor(i, col);
     }
   }
 
   for (let j = 0; j < meteorSize; j++) {
     const index = (meteorstart + j) % seg.length;
-    let idx = 255;
-    let ii = (trail[index] = maxv);
-    if (!seg.check1) {
-      ii = map(index, 0, seg.length, 0, maxv);
-      idx = 0;
+    if (meteorSmooth) {
+      trail[index] = maxv;
+      seg.setPixelColor(
+        index,
+        seg.check1
+          ? seg.color_from_palette(index, true, false, 0, trail[index])
+          : seg.color_from_palette(trail[index], false, true, 255),
+      );
+    } else {
+      let idx = 255;
+      let ii = (trail[index] = maxv);
+      if (!seg.check1) {
+        ii = map(index, 0, seg.length, 0, maxv);
+        idx = 0;
+      }
+      seg.setPixelColor(
+        index,
+        seg.color_from_palette(ii, false, false, idx, 255),
+      );
     }
-    seg.setPixelColor(
-      index,
-      seg.color_from_palette(ii, false, false, idx, 255),
-    );
   }
 
-  seg.step += seg.speed + 1;
+  // uint32_t SEGENV.step upstream; the smooth branch's meteorstart reads it
+  seg.step = (seg.step + seg.speed + 1) >>> 0;
 }
 
 // --- Glitter (87) -----------------------------------------------------------
