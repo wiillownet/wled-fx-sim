@@ -41,7 +41,7 @@ describe('registry surface', () => {
     const ids = portedFxIds();
     expect(ids).toContain(0);
     expect(ids).toContain(66);
-    expect(ids.length).toBeGreaterThanOrEqual(20);
+    expect(ids.length).toBeGreaterThanOrEqual(200);
     for (const id of ids) expect(isPorted(id)).toBe(true);
     expect(isPorted(999)).toBe(false);
   });
@@ -844,6 +844,13 @@ describe('spot checks against known behavior', () => {
       .map((px, i) => (px[0] + px[1] + px[2] > 30 ? i : -1))
       .filter((i) => i >= 0);
     expect(litIdx.length).toBeGreaterThan(0);
+    // "spreads across the strip" means more than one bird, spread out -- a
+    // regression collapsing them onto one pixel would pass a lit-count check
+    const span = litIdx[litIdx.length - 1] - litIdx[0];
+    expect(span).toBeGreaterThanOrEqual(20);
+    let runs = 0;
+    for (const i of litIdx) if (!litIdx.includes(i - 1)) runs++;
+    expect(runs).toBeGreaterThanOrEqual(2);
   });
 
   it('Blink Rainbow (26) cycles hues across its lit frames', () => {
@@ -898,13 +905,28 @@ describe('spot checks against known behavior', () => {
     });
     let minLum = Infinity;
     let maxLum = 0;
+    let sawPair = false;
+    let maxLitFraction = 0;
     for (let t = 0; t < 8000; t += 40) {
       const buf = sim.frame(t);
       const lum = buf.reduce((s, px) => s + px[0] + px[1] + px[2], 0);
       minLum = Math.min(minLum, lum);
       maxLum = Math.max(maxLum, lum);
+      // "a pair of eyes against a dark background": two distinct lit runs, and
+      // the background stays dark -- whole-strip flashing would pass on
+      // luminance variance alone
+      const lit = buf.map((px) => px[0] + px[1] + px[2] > 30);
+      let runs = 0;
+      for (let i = 0; i < lit.length; i++) if (lit[i] && !lit[i - 1]) runs++;
+      if (runs === 2) sawPair = true;
+      maxLitFraction = Math.max(
+        maxLitFraction,
+        lit.filter(Boolean).length / lit.length,
+      );
     }
     expect(maxLum).toBeGreaterThan(minLum);
+    expect(sawPair).toBe(true);
+    expect(maxLitFraction).toBeLessThan(0.25);
   });
 
   it('Dancing Shadows (112) casts moving spotlights against a black background', () => {
