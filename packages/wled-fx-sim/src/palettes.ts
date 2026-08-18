@@ -13,6 +13,18 @@ import type { RGB } from './lib8.js';
 import { unpack } from './lib8.js';
 import { FIXED_PALETTES } from './palette-data.generated.js';
 
+// loadPalette hands these arrays out by reference (firmware copies its
+// CRGBPalette16 by value instead), so one in-place write would corrupt the
+// palette for every sim sharing that id. Freeze the triples, not just the rows:
+// the realistic slip is `pal[i][channel] = x`, which a shallow freeze misses.
+// Lives here rather than in palette-data.generated.ts so it survives a
+// regeneration of that file.
+for (const pal of Object.values(FIXED_PALETTES)) {
+  for (const entry of pal) Object.freeze(entry);
+  Object.freeze(pal);
+}
+Object.freeze(FIXED_PALETTES);
+
 /**
  * Linear RGB gradient between two colors across [startpos, endpos] --
  * fill_gradient_RGB (single-range overload). Exported beyond loadPalette's own
