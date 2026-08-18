@@ -1744,7 +1744,9 @@ function modePacifica(seg: Segment): void {
   let sCIStart1 = seg.aux0;
   let sCIStart2 = seg.aux1;
   let sCIStart3 = seg.step & 0xffff;
-  let sCIStart4 = Math.trunc(seg.step / 0x10000);
+  // step is a uint32 field upstream, so the high half is a logical shift; the
+  // packed write below goes through >>> 0 to keep it one.
+  let sCIStart4 = seg.step >>> 16;
 
   const deltams = (FRAMETIME >> 2) + ((FRAMETIME * seg.speed) >> 7);
 
@@ -1761,7 +1763,7 @@ function modePacifica(seg: Segment): void {
   sCIStart4 = (sCIStart4 - deltams2 * beatsin88_t(257, deltat, 4, 6)) & 0xffff;
   seg.aux0 = sCIStart1;
   seg.aux1 = sCIStart2;
-  seg.step = (sCIStart4 << 16) | (sCIStart3 & 0xffff);
+  seg.step = (((sCIStart4 << 16) | (sCIStart3 & 0xffff)) >>> 0);
 
   const basethreshold = beatsin8_t(9, deltat, 55, 65);
   let wave = beat8(7, deltat);

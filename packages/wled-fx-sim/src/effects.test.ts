@@ -11,6 +11,8 @@ import {
   supports2D,
   type RGB,
 } from './index.js';
+import { EFFECT_SIMS, FRAMETIME as STEP_MS } from './effects.js';
+import { Segment } from './segment.js';
 
 const LEN = 30;
 const RED: RGB = [255, 0, 0];
@@ -490,6 +492,21 @@ describe('spot checks against known behavior', () => {
       }
     }
     expect(gSum + bSum).toBeGreaterThan(rSum);
+  });
+
+  it('Pacifica (101) keeps SEGENV.step a uint32 so its high half stays intact', () => {
+    // Upstream packs sCIStart4 into the top 16 bits of a uint32 step and reads
+    // it back with a logical >>16; a signed step would truncate toward zero
+    // there and drift the fourth wave layer by one per frame.
+    const seg = new Segment(30, 0x1234);
+    for (let f = 0; f < 200; f++) {
+      seg.now = f * STEP_MS;
+      seg.refreshPalette();
+      EFFECT_SIMS[101](seg);
+      seg.call++;
+      expect(seg.step).toBeGreaterThanOrEqual(0);
+      expect(seg.step).toBeLessThanOrEqual(0xffffffff);
+    }
   });
 
   it('Aurora (38) lights up pixels beyond the flat backlight floor', () => {
