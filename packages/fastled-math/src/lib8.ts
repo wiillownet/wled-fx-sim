@@ -142,7 +142,9 @@ export function colorFromPalette(
 ): number {
   let idx = index;
   if (blendType === LINEARBLEND_NOWRAP) {
-    idx = (u8(idx) * 0xf0) >> 8;
+    // Upstream remaps the full unsigned index and only narrows to a byte after
+    // (colors.cpp:118-122); narrowing first diverges for any index > 255.
+    idx = (idx * 0xf0) >>> 8;
   }
   const hi4 = u8(idx) >> 4;
   const lo4 = idx & 0x0f;

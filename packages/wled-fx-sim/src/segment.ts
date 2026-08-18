@@ -191,9 +191,12 @@ export class Segment {
     if (this.palette === 0 && mcol < 3) {
       return color_fade(color, pbri, true);
     }
-    let paletteIndex = i;
+    // Upstream's parameter is uint16_t, so the index narrows at the call
+    // boundary before either branch uses it (FX_fcn.cpp:1136).
+    const i16 = i & 0xffff;
+    let paletteIndex = i16;
     if (mapping)
-      paletteIndex = Math.min(Math.trunc((i * 255) / this.length), 255);
+      paletteIndex = Math.min(Math.trunc((i16 * 255) / this.length), 255);
     // paletteBlend 0: blend, wrap only when moving.
     let blend = NOBLEND;
     if (PALETTE_BLEND === 0) blend = moving ? LINEARBLEND : LINEARBLEND_NOWRAP;
