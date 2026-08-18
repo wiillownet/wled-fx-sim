@@ -1260,6 +1260,22 @@ describe('spot checks against known behavior', () => {
     expect(early).not.toBe(late);
   });
 
+  it('Shimmer (161) applies the "Granular" modulator only when c2 is set', () => {
+    const base = {
+      length: 40,
+      sx: 128,
+      custom3: 40,
+      colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB] as RGB[],
+    };
+    const at = (extra: Partial<Parameters<typeof createEffectSim>[1]>) =>
+      JSON.stringify(createEffectSim(161, { ...base, ...extra }).frame(1000));
+    const plain = at({ custom2: 0 });
+    expect(at({ custom2: 0, check1: true })).toBe(plain); // no c2: check1 inert
+    expect(at({ custom2: 180 })).not.toBe(plain); // perlin modulation
+    expect(at({ custom2: 180, check1: true })).not.toBe(plain); // "Zebra" sine
+    expect(at({ custom2: 180, check1: true })).not.toBe(at({ custom2: 180 }));
+  });
+
   it('Stream 2 / "Random Chase" (61) shifts its random pixel pattern over time', () => {
     const sim = createEffectSim(61, { length: 20, sx: 128 });
     const early = JSON.stringify(sim.frame(200));

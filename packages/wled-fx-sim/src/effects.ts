@@ -4999,13 +4999,23 @@ function modeShimmer(seg: Segment): void {
   for (let i = 0; i < seg.length; i++) {
     const dist = Math.abs(position - (i << 8));
     if (dist < radius << 8) {
-      const color = seg.color_from_palette(
+      let color = seg.color_from_palette(
         Math.trunc((i * 255) / seg.length),
         false,
         false,
         0,
       );
       const blend = Math.trunc(dist / radius);
+      if (seg.custom2) {
+        // "Granular" modulator dims the gradient: sine ("Zebra") or perlin.
+        // strip.now * custom3 is a uint32 product upstream, so it wraps before
+        // the shift rather than after it.
+        const flow = (((seg.now * seg.custom3) >>> 0) << 5) >>> 0;
+        const modVal = seg.check1
+          ? (sin16(((i * seg.custom2) << 6) + flow) >> 8) + 128
+          : inoise16xy(((i * seg.custom2) << 7) >>> 0, flow) >> 8;
+        color = color_fade(color, modVal, true);
+      }
       seg.setPixelColor(i, color_blend(color, seg.color(1), blend));
     } else {
       seg.setPixelColor(i, seg.color(1));
