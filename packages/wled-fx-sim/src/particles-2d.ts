@@ -1250,6 +1250,10 @@ export function initParticleSystem2D(
     advanced,
     sizecontrol,
   );
+  // Firmware's alloc loop is `while (numparticles >= 5)`; with fewer than 5 it
+  // never allocates and initParticleSystem2D returns false, so the effect falls
+  // back to static. Allocation can't fail here, so the loop reduces to the floor.
+  if (numparticles < 5) return null;
   const numsources = calculateNumberOfSources2D(pixels, requestedSources);
   const ps = new ParticleSystem2D(
     seg,
