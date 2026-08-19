@@ -1863,3 +1863,49 @@ describe('PS Balance (209) tilts on 1D Perlin noise', () => {
     expect(lightSum(8)).toBe(14477); // 15594 via perlin8(aux0 & 0xff, 0)
   });
 });
+
+describe('uint32 time products fold before an integer divide', () => {
+  // Same class as the shift-side fixes, but the fold has to happen before a
+  // *divide*: `strip.now * k` wraps at 2^32 and the quotient then reaches
+  // perlin as an unmasked coordinate. A power-of-two divisor happens to keep
+  // the 2^32 difference a multiple of 65536 and hides it, so both anchors
+  // below pick a speed whose divisor is not a power of two.
+  const sumFrames = (
+    fxId: number,
+    params: Parameters<typeof createEffectSim>[1],
+    at: number[],
+  ) => {
+    const sim = createEffectSim(fxId, params);
+    let total = 0;
+    for (const t of at)
+      total += sim.frame(t).reduce((a, p) => a + p[0] + p[1] + p[2], 0);
+    return total;
+  };
+
+  it('Perlin Move (147) past the ~9.3 h wrap of strip.now * 128', () => {
+    const late = 12 * 3600 * 1000;
+    const params = {
+      length: 60,
+      dimensions: '1d' as const,
+      sx: 128,
+      ix: 200,
+      custom1: 200,
+      seed: 0x1234,
+    };
+    expect(sumFrames(147, params, [late, late + 500, late + 1500])).toBe(31289); // 30851 unwrapped
+  });
+
+  it('Plasma Ball (178) past the ~6.2 day wrap of strip.now * 8', () => {
+    const late = 7 * 86400000;
+    const params = {
+      length: 256,
+      width: 16,
+      height: 16,
+      dimensions: '2d' as const,
+      sx: 100, // divisor 156, not a power of two
+      ix: 200,
+      seed: 0x1234,
+    };
+    expect(sumFrames(178, params, [late, late + 500, late + 1500])).toBe(335816); // 331239 unwrapped
+  });
+});

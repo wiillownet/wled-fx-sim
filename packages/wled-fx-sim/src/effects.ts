@@ -4210,7 +4210,10 @@ function modePerlinMove(seg: Segment): void {
   if (seg.length <= 1) return fallbackStatic(seg);
   seg.fade_out(255 - seg.custom1);
   const count = Math.trunc(seg.intensity / 16) + 1;
-  const t = Math.trunc((seg.now * 128) / (260 - seg.speed));
+  // strip.now * 128 is a uint32 product upstream and wraps at ~9.3 h; the
+  // quotient feeds perlin16 unmasked, so the fold has to happen before the
+  // divide, not after it.
+  const t = Math.trunc(((seg.now * 128) >>> 0) / (260 - seg.speed));
   for (let i = 0; i < count; i++) {
     const locn = inoise16xy(t + i * 15000, t);
     const pixloc = map(locn, 50 * 256, 192 * 256, 0, seg.length - 1);
@@ -6761,7 +6764,10 @@ function mode2DPlasmaball(seg: Segment2D): void {
   const rows = seg.height;
 
   seg.fadeToBlackBy(seg.custom1 >> 2);
-  const t = Math.trunc((seg.now * 8) / (256 - seg.speed));
+  // strip.now * 8 is computed in uint32 before the divide (FX.cpp:5863), so
+  // it wraps at ~6.2 days; t then reaches perlin8 as a uint16 parameter and a
+  // non-power-of-2 divisor does not preserve the difference.
+  const t = Math.trunc(((seg.now * 8) >>> 0) / (256 - seg.speed));
   const palette = seg.getCurrentPalette();
   for (let i = 0; i < cols; i++) {
     const thisVal = perlin8(i * 30, t, t);
