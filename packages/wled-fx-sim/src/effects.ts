@@ -3086,8 +3086,9 @@ function modeRain(seg: Segment): void {
       seg.setPixelColor(i, seg.getPixelColor(i + 1));
     }
     seg.setPixelColor(seg.length - 1, ctemp);
-    seg.aux0++;
-    seg.aux1++;
+    // uint16_t upstream, so 0xffff rolls to 0 and trips the reset below
+    seg.aux0 = (seg.aux0 + 1) & 0xffff;
+    seg.aux1 = (seg.aux1 + 1) & 0xffff;
     if (seg.aux0 === 0) seg.aux0 = 0xffff;
     // Firmware's own source sets aux0 (not aux1) on this line too -- a real
     // copy-paste quirk in mode_rain(), preserved faithfully.
@@ -9195,6 +9196,7 @@ export const EFFECT_SIMS: Record<number, (seg: Segment) => void> = {
 
 // --- Fireworks (42), 2D branch ----------------------------------------------
 function mode2DFireworks(seg: Segment2D): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   const width = seg.width;
   const height = seg.height;
 
@@ -9235,6 +9237,7 @@ function mode2DFireworks(seg: Segment2D): void {
 
 // --- Rain (43), 2D branch ----------------------------------------------------
 function mode2DRain(seg: Segment2D): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   const width = seg.width;
   const height = seg.height;
   seg.step += FRAMETIME;
@@ -9242,10 +9245,13 @@ function mode2DRain(seg: Segment2D): void {
   if (seg.call && seg.step > speedFormulaL) {
     seg.step = 1;
     seg.move(6, 1, true); // move all pixels down
+    // uint16_t upstream: the row step overflows the field from 0xffff
     seg.aux0 =
-      (seg.aux0 % width) + (Math.trunc(seg.aux0 / width) + 1) * width;
+      ((seg.aux0 % width) + (Math.trunc(seg.aux0 / width) + 1) * width) &
+      0xffff;
     seg.aux1 =
-      (seg.aux1 % width) + (Math.trunc(seg.aux1 / width) + 1) * width;
+      ((seg.aux1 % width) + (Math.trunc(seg.aux1 / width) + 1) * width) &
+      0xffff;
     if (seg.aux0 === 0) seg.aux0 = 0xffff;
     // Firmware sets aux0 (not aux1) on this line too -- the same copy-paste
     // quirk preserved in the 1D port above (modeRain).

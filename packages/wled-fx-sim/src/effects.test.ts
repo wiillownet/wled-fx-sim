@@ -11,8 +11,13 @@ import {
   supports2D,
   type RGB,
 } from './index.js';
-import { EFFECT_SIMS, FRAMETIME as STEP_MS } from './effects.js';
+import {
+  EFFECT_SIMS,
+  EFFECT_SIMS_2D,
+  FRAMETIME as STEP_MS,
+} from './effects.js';
 import { Segment } from './segment.js';
+import { Segment2D } from './segment-2d.js';
 
 const LEN = 30;
 const RED: RGB = [255, 0, 0];
@@ -208,6 +213,29 @@ describe.each(portedFxIds())('effect %i contract', (fxId) => {
     sim.frame(4000);
     sim.reset();
     expect(sim.frame(0)).toEqual(first);
+  });
+});
+
+describe('Rain (43) spark index', () => {
+  it('rolls the 0xffff seed through uint16 like SEGENV.aux0 does', () => {
+    // aux0 starts at UINT16_MAX; the 2D row step then computes
+    // (aux0 % w) + (aux0 / w + 1) * w = 65551, which the uint16_t field
+    // truncates to 15 -- below w*h, so the "ignore" reset does not fire and
+    // the spark walks down column 15. Without the truncation it reads as
+    // 65551, trips `>= w*h`, and restarts at column 0.
+    const seg = new Segment2D(16, 16, 0x1234);
+    seg.speed = 255; // shortest rain interval, so a tick lands every frame
+    seg.intensity = 0; // rarest spark, so aux0 is the row step's alone
+    seg.colors = [0xffa000, 0, 0];
+    const seen: number[] = [];
+    for (let f = 0; f < 5; f++) {
+      seg.now = f * STEP_MS;
+      seg.refreshPalette();
+      EFFECT_SIMS_2D[43](seg as Segment2D);
+      seg.call++;
+      seen.push(seg.aux0);
+    }
+    expect(seen).toEqual([0xffff, 15, 31, 47, 63]);
   });
 });
 
