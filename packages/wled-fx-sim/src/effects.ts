@@ -7757,8 +7757,11 @@ function mode2DWavingCell(seg: Segment2D): void {
   const palette = seg.getCurrentPalette();
   for (let x = 0; x < cols; x++) {
     for (let y = 0; y < rows; y++) {
+      // Two nested sines upstream: the inner one turns the temporal term into
+      // a phase offset for the outer one.
       const wave =
-        sin8(x * aX + (Math.imul(((y << 8) + t) | 0, aY) >>> 8)) + cos8(y * aZ);
+        sin8(x * aX + sin8(Math.imul(((y << 8) + t) | 0, aY) >>> 8)) +
+        cos8(y * aZ);
       const colorIndex = (wave + (t >>> (8 - (seg.check2 ? 3 : 0)))) & 0xff;
       seg.setPixelColorXY(x, y, colorFromPalette(palette, colorIndex));
     }
