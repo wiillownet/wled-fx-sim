@@ -6318,11 +6318,11 @@ function mode2DDnaSpiral(seg: Segment2D): void {
   for (let i = 0; i < rows; i++) {
     let x =
       beatsin8_t(speeds, seg.now, 0, cols - 1, 0, i * freq) +
-      beatsin8_t((speeds - 7) & 0xff, seg.now, 0, cols - 1, 0, i * freq + 128);
+      beatsin8_t((speeds - 7) & 0xffff, seg.now, 0, cols - 1, 0, i * freq + 128);
     let x1 =
       beatsin8_t(speeds, seg.now, 0, cols - 1, 0, 128 + i * freq) +
       beatsin8_t(
-        (speeds - 7) & 0xff,
+        (speeds - 7) & 0xffff,
         seg.now,
         0,
         cols - 1,
@@ -6450,9 +6450,16 @@ function mode2DFrizzles(seg: Segment2D): void {
   const palette = seg.getCurrentPalette();
   for (let i = 8; i > 0; i--) {
     seg.addPixelColorXY(
-      beatsin8_t((Math.trunc(seg.speed / 8) + i) & 0xff, seg.now, 0, cols - 1),
+      // bpm is a uint16_t parameter upstream, so intensity/8 - i wraps there,
+      // not at a byte
       beatsin8_t(
-        (Math.trunc(seg.intensity / 8) - i) & 0xff,
+        (Math.trunc(seg.speed / 8) + i) & 0xffff,
+        seg.now,
+        0,
+        cols - 1,
+      ),
+      beatsin8_t(
+        (Math.trunc(seg.intensity / 8) - i) & 0xffff,
         seg.now,
         0,
         rows - 1,
@@ -6684,8 +6691,8 @@ function mode2DMetaballs(seg: Segment2D): void {
   );
 
   // and one Lissajous function
-  const x1 = beatsin8_t(Math.trunc(23 * speed) & 0xff, seg.now, 0, cols - 1);
-  const y1 = beatsin8_t(Math.trunc(28 * speed) & 0xff, seg.now, 0, rows - 1);
+  const x1 = beatsin8_t(Math.trunc(23 * speed) & 0xffff, seg.now, 0, cols - 1);
+  const y1 = beatsin8_t(Math.trunc(28 * speed) & 0xffff, seg.now, 0, rows - 1);
 
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {

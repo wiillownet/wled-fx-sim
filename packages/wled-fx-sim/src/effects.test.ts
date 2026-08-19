@@ -239,6 +239,28 @@ describe('Rain (43) spark index', () => {
   });
 });
 
+describe('beatsin bpm is a uint16 parameter', () => {
+  it('wraps Frizzles (177) negative bpm at 16 bits, not 8', () => {
+    // beatsin8_t's first parameter is uint16_t, and Frizzles feeds it
+    // intensity/8 - i, which goes negative for every i once intensity drops
+    // below 64. Wrapping that at a byte lands under 256, where beat16 shifts
+    // the bpm left by 8 -- a completely different rate.
+    const sim = createEffectSim(177, {
+      length: 256,
+      width: 16,
+      height: 16,
+      dimensions: '2d',
+      sx: 128,
+      ix: 16, // intensity/8 = 2, so i = 3..8 all go negative
+      pal: 11,
+      seed: 0x1234,
+      custom1: 0,
+    });
+    const lit = sim.frame(1000).filter((p) => p[0] || p[1] || p[2]).length;
+    expect(lit).toBe(50); // 62 when the bpm wraps at a byte
+  });
+});
+
 describe('abs8 narrows before taking the absolute value', () => {
   // FastLED's abs8 takes an int8_t, so a span wider than 127 wraps to a small
   // (or negative) one before abs() runs -- it caps how long the gradient lines
