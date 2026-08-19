@@ -239,6 +239,37 @@ describe('Rain (43) spark index', () => {
   });
 });
 
+describe('abs8 narrows before taking the absolute value', () => {
+  // FastLED's abs8 takes an int8_t, so a span wider than 127 wraps to a small
+  // (or negative) one before abs() runs -- it caps how long the gradient lines
+  // in Colored Bursts (167) and DNA Spiral (182) can get. Only observable on a
+  // matrix wider than 128, which firmware allows (maxWidth/maxHeight cap at
+  // 255); the counts below are with the wrap, 494 and 14110 without it.
+  const litCount = (id: number, w: number, h: number) => {
+    const sim = createEffectSim(id, {
+      length: w * h,
+      width: w,
+      height: h,
+      dimensions: '2d',
+      sx: 180,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+      custom1: 100,
+      custom3: 40,
+    });
+    return sim.frame(2000).filter((px) => px[0] || px[1] || px[2]).length;
+  };
+
+  it('caps DNA Spiral (182) line length on a 200-wide matrix', () => {
+    expect(litCount(182, 200, 4)).toBe(484);
+  });
+
+  it('caps Colored Bursts (167) line length on a 160-wide matrix', () => {
+    expect(litCount(167, 160, 160)).toBe(14067);
+  });
+});
+
 describe('integer division at firmware widths', () => {
   it('Bouncing Balls (91) truncates its bounce-time quotient', () => {
     // (time - lastBounceTime) is an unsigned long and the speed divisor an

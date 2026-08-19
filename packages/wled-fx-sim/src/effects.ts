@@ -87,6 +87,14 @@ export const FRAMETIME = Math.trunc(1000 / 42); // 23
 const WHITE = 0xffffff;
 const BLACK = 0x000000;
 
+/**
+ * FastLED abs8(): the parameter is `int8_t`, so the argument narrows to a
+ * signed byte *before* the absolute value is taken (fastled_slim.h:17). A
+ * float argument truncates toward zero on the way in, as the C conversion
+ * does.
+ */
+const abs8 = (v: number): number => Math.abs((Math.trunc(v) << 24) >> 24);
+
 /** Arduino map(): integer, truncating. */
 function map(
   x: number,
@@ -6231,8 +6239,8 @@ function mode2DColoredBursts(seg: Segment2D): void {
       LINEARBLEND,
     );
 
-    const xsteps = Math.abs(x1 - y1) + 1;
-    const ysteps = Math.abs(x2 - y2) + 1;
+    const xsteps = abs8(x1 - y1) + 1;
+    const ysteps = abs8(x2 - y2) + 1;
     const steps = xsteps >= ysteps ? xsteps : ysteps;
     // gradient line
     for (let j = 1; j <= steps; j++) {
@@ -6326,7 +6334,7 @@ function mode2DDnaSpiral(seg: Segment2D): void {
     if ((i + Math.trunc(ms / 8)) & 3) {
       x = Math.trunc(x / 2);
       x1 = Math.trunc(x1 / 2);
-      const steps = Math.abs(x - x1) + 1;
+      const steps = abs8(x - x1) + 1;
       const positive = x1 >= x; // direction of drawing
       for (let k = 1; k <= steps; k++) {
         const rate = Math.trunc((k * 255) / steps);
@@ -6931,7 +6939,6 @@ function mode2DSunRadiation(seg: Segment2D): void {
     }
   }
   const sb = (v: number): number => (v << 24) >> 24;
-  const abs8 = (v: number): number => Math.abs(sb(v));
 
   let yindex = cols + 3;
   let vly = -(Math.trunc(rows / 2) + 1);
@@ -7397,13 +7404,12 @@ function mode2DPlasmaRotozoom(seg: Segment2D): void {
   const f = (sin_approx(rot.a / 2) + (128 - seg.intensity) / 128 + 1.1) / 1.5;
   const kosinus = cos_approx(rot.a) * f;
   const sinus = sin_approx(rot.a) * f;
-  const abs8f = (v: number): number => Math.abs((Math.trunc(v) << 24) >> 24);
   for (let i = 0; i < cols; i++) {
     const u1 = i * kosinus;
     const v1 = i * sinus;
     for (let j = 0; j < rows; j++) {
-      const u = abs8f(u1 - j * sinus) % cols;
-      const v = abs8f(v1 + j * kosinus) % rows;
+      const u = abs8(u1 - j * sinus) % cols;
+      const v = abs8(v1 + j * kosinus) % rows;
       seg.setPixelColorXY(
         i,
         j,
