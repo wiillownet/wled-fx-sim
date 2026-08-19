@@ -9678,6 +9678,7 @@ function mode2DExplodingFireworks(seg: Segment2D): void {
 const geqBarState = new WeakMap<Segment2D, Uint16Array>();
 
 function mode2DGeq(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
   const cols = seg.width;
   const rows = seg.height;
   const numBands = map(seg.custom1, 0, 255, 1, 16);
@@ -9741,6 +9742,7 @@ function mode2DGeq(seg: Segment2D): void {
 
 // --- Funky Plank (160) -----------------------------------------------------
 function mode2DFunkyPlank(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
   const cols = seg.width;
   const rows = seg.height;
 
@@ -9787,6 +9789,7 @@ function mode2DFunkyPlank(seg: Segment2D): void {
 
 // --- Swirl (175) -------------------------------------------------------------
 function mode2DSwirl(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
   const cols = seg.width;
   const rows = seg.height;
   if (seg.call === 0) seg.fill(BLACK);
@@ -9834,6 +9837,7 @@ function mode2DSwirl(seg: Segment2D): void {
 
 // --- Waverly (165) -----------------------------------------------------------
 function mode2DWaverly(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
   const cols = seg.width;
   const rows = seg.height;
   const { volumeSmth } = sampleSyntheticAudio(seg.now);
@@ -9917,6 +9921,7 @@ function scaleColorFloat(c: number, factor: number): number {
 }
 
 function mode2DAkemi(seg: Segment2D): void {
+  if (!seg.is2D()) return fallbackStatic(seg);
   const cols = seg.width;
   const rows = seg.height;
 

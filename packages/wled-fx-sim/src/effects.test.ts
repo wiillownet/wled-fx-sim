@@ -211,6 +211,25 @@ describe.each(portedFxIds())('effect %i contract', (fxId) => {
   });
 });
 
+describe('2D fallbacks', () => {
+  it('audio 2D bodies fall back to a solid fill off a real matrix', () => {
+    // GEQ, Funky Plank, Swirl, Waverly and Akemi all open with
+    // `if (!strip.isMatrix || !SEGMENT.is2D()) FX_FALLBACK_STATIC` upstream.
+    for (const id of [139, 160, 165, 175, 186]) {
+      const sim = createEffectSim(id, {
+        length: 16,
+        width: 16,
+        height: 1,
+        dimensions: '2d',
+        colors: [RED, GREEN, BLUE],
+      });
+      const buf = sim.frame(500);
+      expect(buf).toHaveLength(16);
+      for (const px of buf) expect(px).toEqual(RED);
+    }
+  });
+});
+
 describe('animated effects change over time', () => {
   // Solid (0) is intentionally static. Percent (98) at ix=200 saturates to
   // 0% fill from frame 0 (its own math, not a port bug) -- also static here.
