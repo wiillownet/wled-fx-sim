@@ -86,8 +86,17 @@ export class Segment2D extends Segment {
 
   // --- blur (FX_2Dfcn.cpp Segment::blur2D) ----------------------------------
 
-  /** 2D segment blur() delegates to a symmetric blur2D (FX_fcn.cpp). */
+  /**
+   * 2D segment blur() delegates to a symmetric blur2D (FX_fcn.cpp) -- but only
+   * for a real matrix. A degenerate 1xN/Nx1 Segment2D takes the 1D path there,
+   * which is not the same as blur2D(a, a): the empty axis still scales every
+   * pixel by `keep` on its way through.
+   */
   override blur(amount: number, smear = false): void {
+    if (!this.is2D()) {
+      super.blur(amount, smear);
+      return;
+    }
     this.blur2D(amount, amount, smear);
   }
 

@@ -2,6 +2,7 @@
 // Test anchors derived from WLED v16.0.0 behavior; test code original to this package.
 import { describe, expect, it } from 'vitest';
 import { Segment2D } from './segment-2d.js';
+import { Segment } from './segment.js';
 
 const RED = 0xff0000;
 const WHITE = 0xffffff;
@@ -88,6 +89,16 @@ describe('Segment2D blur', () => {
     a.blur(100);
     b.blur2D(100, 100);
     expect(Array.from(a.pixels)).toEqual(Array.from(b.pixels));
+  });
+
+  it('blur() on a degenerate matrix takes the 1D path, as firmware does', () => {
+    const strip = new Segment2D(8, 1);
+    const flat = new Segment(8);
+    strip.setPixelColorXY(4, 0, WHITE);
+    flat.setPixelColor(4, WHITE);
+    strip.blur(100);
+    flat.blur(100);
+    expect(Array.from(strip.pixels)).toEqual(Array.from(flat.pixels));
   });
 
   it('smear blur keeps total light from fading the source away', () => {
