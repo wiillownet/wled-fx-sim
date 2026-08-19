@@ -17,6 +17,7 @@ import {
   FRAMETIME as STEP_MS,
 } from './effects.js';
 import { Segment } from './segment.js';
+import { inoise16xy } from './lib8.js';
 import { Segment2D } from './segment-2d.js';
 
 const LEN = 30;
@@ -236,6 +237,44 @@ describe('Rain (43) spark index', () => {
       seen.push(seg.aux0);
     }
     expect(seen).toEqual([0xffff, 15, 31, 47, 63]);
+  });
+});
+
+describe('uint32 time products shift logically', () => {
+  it('keeps Noise 4 (73) sampling the same noise past 2^31', () => {
+    // stp = (strip.now * SEGMENT.speed) >> 7 is uint32 upstream and goes
+    // into perlin16 unmasked, so a signed shift moves the sample by 2^25
+    // once the product passes 2^31 -- about two hours at full speed.
+    const seg = new Segment(30, 0x1234);
+    seg.speed = 255;
+    seg.palette = 11;
+    seg.colors = [0xffa000, 0, 0];
+    // now * 255 lands between 2^31 and 2^32 here
+    seg.now = 9_000_000;
+    seg.refreshPalette();
+    EFFECT_SIMS[73](seg);
+    const signedShift = ((seg.now * seg.speed) >> 7) >>> 0;
+    const logicalShift = (seg.now * seg.speed) >>> 7;
+    expect(signedShift).not.toBe(logicalShift); // the frame really is past 2^31
+    // Rendering with the logical value must match a hand-rolled reference.
+    const ref = new Segment(30, 0x1234);
+    ref.speed = 255;
+    ref.palette = 11;
+    ref.colors = [0xffa000, 0, 0];
+    ref.now = 9_000_000;
+    ref.refreshPalette();
+    for (let i = 0; i < ref.length; i++) {
+      ref.setPixelColor(
+        i,
+        ref.color_from_palette(
+          inoise16xy(i << 12, logicalShift),
+          false,
+          false,
+          0,
+        ),
+      );
+    }
+    expect(Array.from(seg.pixels)).toEqual(Array.from(ref.pixels));
   });
 });
 

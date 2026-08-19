@@ -1230,7 +1230,7 @@ function twinklefoxBase(seg: Segment, cat: boolean): void {
     const myspeedmultiplierQ5_3 =
       ((((prng16 & 0xff) >> 4) + (prng16 & 0x0f)) & 0x0f) + 0x08;
     const myclock30 =
-      ((seg.now * myspeedmultiplierQ5_3) >> 3) + myclockoffset16;
+      ((seg.now * myspeedmultiplierQ5_3) >>> 3) + myclockoffset16;
     const myunique8 = prng16 >> 8;
 
     const [cr, cg, cb] = twinklefoxOneTwinkle(seg, myclock30, myunique8, cat);
@@ -1744,7 +1744,8 @@ function addRGB3(c1: RGB, c2: RGB): RGB {
 }
 
 function modePacifica(seg: Segment): void {
-  const deltat = (seg.now >> 2) + Math.trunc((seg.now * seg.speed) >> 7);
+  // uint32 shifts upstream (strip.now and the speed product are unsigned)
+  const deltat = (seg.now >>> 2) + ((seg.now * seg.speed) >>> 7);
 
   let p1 = PACIFICA_PALETTE_1;
   let p2 = PACIFICA_PALETTE_2;
@@ -4196,7 +4197,7 @@ function modeNoise16_3(seg: Segment): void {
 // overload (inoise16xy) -- a distinct scale/offset from the 3-arg inoise16
 // used above, not that function with z=0.
 function modeNoise16_4(seg: Segment): void {
-  const stp = (seg.now * seg.speed) >> 7;
+  const stp = (seg.now * seg.speed) >>> 7; // uint32 upstream, fed to perlin16 unmasked
   for (let i = 0; i < seg.length; i++) {
     const index = inoise16xy(i << 12, stp);
     seg.setPixelColor(i, seg.color_from_palette(index, false, false, 0));
@@ -5110,7 +5111,7 @@ function modeTricolorWipe(seg: Segment): void {
   const cycleTime = 1000 + (255 - seg.speed) * 200;
   const perc = seg.now % cycleTime;
   const prog = Math.trunc((perc * 65535) / cycleTime);
-  const ledIndex = (prog * seg.length * 3) >> 16;
+  const ledIndex = (prog * seg.length * 3) >>> 16; // unsigned upstream
   let ledOffset = ledIndex;
 
   for (let i = 0; i < seg.length; i++) {
