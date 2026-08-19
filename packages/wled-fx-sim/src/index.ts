@@ -71,9 +71,10 @@ export interface EffectSimParams {
   check1?: boolean;
   check2?: boolean;
   check3?: boolean;
-  /** Custom sliders c1/c2/c3 (0-255); effect-specific meaning. */
+  /** Custom sliders c1/c2 (0-255); effect-specific meaning. */
   custom1?: number;
   custom2?: number;
+  /** Custom slider c3; a 5-bit field upstream (FX.h:454), so 0-31. */
   custom3?: number;
   /** PRNG seed -- fix it for a reproducible preview (default matches WLED's). */
   seed?: number;
@@ -194,7 +195,7 @@ export function createEffectSim(
     seg.check3 = params.check3 ?? false;
     seg.custom1 = clamp8(params.custom1 ?? 0);
     seg.custom2 = clamp8(params.custom2 ?? 0);
-    seg.custom3 = clamp8(params.custom3 ?? 0);
+    seg.custom3 = clamp5(params.custom3 ?? 0);
   };
 
   const build = (): { seg: Segment; run: (seg: Segment) => void } => {
@@ -248,4 +249,10 @@ export function createEffectSim(
 function clamp8(v: number): number {
   const n = v | 0;
   return n < 0 ? 0 : n > 255 ? 255 : n;
+}
+
+/** custom3 is `uint8_t custom3 : 5` upstream, so the firmware range is 0-31. */
+function clamp5(v: number): number {
+  const n = v | 0;
+  return n < 0 ? 0 : n > 31 ? 31 : n;
 }

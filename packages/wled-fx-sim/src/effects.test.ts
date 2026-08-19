@@ -327,7 +327,7 @@ describe('abs8 narrows before taking the absolute value', () => {
   // (or negative) one before abs() runs -- it caps how long the gradient lines
   // in Colored Bursts (167) and DNA Spiral (182) can get. Only observable on a
   // matrix wider than 128, which firmware allows (maxWidth/maxHeight cap at
-  // 255); the counts below are with the wrap, 494 and 14110 without it.
+  // 255); the counts below are with the wrap, 494 and 13832 without it.
   const litCount = (id: number, w: number, h: number) => {
     const sim = createEffectSim(id, {
       length: w * h,
@@ -339,7 +339,7 @@ describe('abs8 narrows before taking the absolute value', () => {
       pal: 11,
       seed: 0x1234,
       custom1: 100,
-      custom3: 40,
+      custom3: 24,
     });
     return sim.frame(2000).filter((px) => px[0] || px[1] || px[2]).length;
   };
@@ -349,7 +349,7 @@ describe('abs8 narrows before taking the absolute value', () => {
   });
 
   it('caps Colored Bursts (167) line length on a 160-wide matrix', () => {
-    expect(litCount(167, 160, 160)).toBe(14067);
+    expect(litCount(167, 160, 160)).toBe(13761);
   });
 });
 
@@ -1554,7 +1554,7 @@ describe('spot checks against known behavior', () => {
     const base = {
       length: 40,
       sx: 128,
-      custom3: 40,
+      custom3: 24,
       colors: [[255, 255, 255], BLACK_RGB, BLACK_RGB] as RGB[],
     };
     const at = (extra: Partial<Parameters<typeof createEffectSim>[1]>) =>

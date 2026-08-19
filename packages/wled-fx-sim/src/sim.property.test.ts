@@ -164,3 +164,29 @@ describe('determinism given seed', () => {
     });
   }
 });
+
+describe('custom3 is a 5-bit slider', () => {
+  // FX.h:454 declares `uint8_t custom3 : 5`, so firmware can never present a
+  // value above 31. Several bodies map it as `map(custom3, 0, 31, ...)`, and
+  // PS Sonic Boom (215) uses `custom3 >> 1` as an FFT bin index into a 16-entry
+  // array -- an unclamped 255 reads past the end and the effect goes silent.
+  const BIN_FX = 215;
+
+  it('clamps an out-of-range request down to 31', () => {
+    if (!portedFxIds().includes(BIN_FX)) return;
+    const run = (custom3: number): RGB[][] => {
+      const sim = createEffectSim(BIN_FX, {
+        length: 30,
+        dimensions: '1d',
+        sx: 128,
+        ix: 200,
+        custom3,
+        seed: 0xbeef,
+      });
+      return [0, 500, 1000, 1500].map((t) => sim.frame(t));
+    };
+    expect(run(255)).toEqual(run(31));
+    expect(run(200)).toEqual(run(31));
+    expect(run(31)).not.toEqual(run(0));
+  });
+});

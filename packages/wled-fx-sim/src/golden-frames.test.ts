@@ -70,7 +70,7 @@ describe('golden frames, 1D branch of dual effects (same params, no matrix)', ()
 // snapshot diff. Only effects that actually read those params are covered --
 // the subset is derived by comparing the two configs rather than hand-listed,
 // so porting another param-branching body extends the guard by itself.
-describe('golden frames, alternate config (checks on, customs 200/120/60)', () => {
+describe('golden frames, alternate config (checks on, customs 200/120/31)', () => {
   const ALT = {
     sx: 180,
     ix: 200,
@@ -81,7 +81,7 @@ describe('golden frames, alternate config (checks on, customs 200/120/60)', () =
     check3: true,
     custom1: 200,
     custom2: 120,
-    custom3: 60,
+    custom3: 31, // c3 is a 5-bit field upstream; 31 is its max
   };
   // Same geometry as the base block, so the two configs are comparable.
   const GEOM = { length: 16, width: 8, height: 8 };
