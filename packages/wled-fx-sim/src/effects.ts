@@ -5204,8 +5204,12 @@ function modeColorClouds(seg: Segment): void {
   const volSaturate = 52000;
 
   const now = seg.now;
-  const volT = Math.trunc((now * volSpeed) / 8);
-  const hueT = Math.trunc((now * hueSpeed) / 8);
+  // Both products are uint32 upstream (FX.cpp:4997-4998) and wrap from ~4.7 h.
+  // Dividing by 8 shrinks the 2^32 difference to 2^29 rather than erasing it,
+  // and perlin16 takes uint32_t parameters -- perlin2D_raw reads the whole
+  // word as `y >> 16`, so nothing downstream folds it away.
+  const volT = Math.trunc(((now * volSpeed) >>> 0) / 8);
+  const hueT = Math.trunc(((now * hueSpeed) >>> 0) / 8);
   const hueOffset = beat88(64, now) >> 8;
 
   for (let i = 0; i < seg.length; i++) {
@@ -9849,10 +9853,11 @@ function mode2DFunkyPlank(seg: Segment2D): void {
   if (seg.call === 0) seg.fill(BLACK);
 
   // Firmware reads a hardware microsecond clock (micros()); this sim only
-  // has millisecond time, so ms*1000 substitutes for it. The original's
+  // has millisecond time, so ms*1000 substitutes for it, folded to uint32 so
+  // it rolls over at 2^32 us (~71.6 min) where micros() does. The original's
   // `+1 % 64` is a precedence quirk (% binds tighter than the outer +, so it
   // reduces to `+1`) -- preserved as-is rather than "fixed".
-  const usNow = seg.now * 1000;
+  const usNow = (seg.now * 1000) >>> 0;
   const secondHand =
     (Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) + 1) & 0xff;
   if (seg.aux0 !== secondHand) {
@@ -10352,8 +10357,11 @@ function modeParticleBlobs2D(seg: Segment2D): void {
 //   custom2 anywhere else, so their "Select bin" / "Volume (min)" sliders do
 //   nothing to the rendered output in firmware either -- they only talk to the
 //   analyser. Nothing is lost by dropping them.
-// * `micros()` -> `seg.now * 1000`; this sim has only ms resolution, matching
-//   the Funky Plank port above. The uint32 micros() rollover is not emulated.
+// * `micros()` -> `(seg.now * 1000) >>> 0`; this sim has only ms resolution, so
+//   ms*1000 substitutes for the hardware clock, and the `>>> 0` reproduces
+//   micros()' uint32 rollover at 2^32 us (~71.6 min). The fold has to happen at
+//   the product: `256 - speed` is generally not a power of two, and the divide
+//   is what the wrapped value feeds.
 // * `hw_random*()` -> `seg.rng.*`, as everywhere else in this file.
 
 /** Nyquist limit for WLED's 22kHz sampling, and its log10 -- FX.cpp:78-79. */
@@ -10420,7 +10428,7 @@ function modePixelwave(seg: Segment): void {
   // `micros()/(256-speed)/500+1 % 16`: `%` binds tighter than `+`, so the
   // `% 16` applies to the literal 1 and the whole term reduces to `+1`. Same
   // precedence quirk as Funky Plank; preserved rather than "fixed".
-  const usNow = seg.now * 1000;
+  const usNow = (seg.now * 1000) >>> 0;
   const secondHand =
     (Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) + 1) & 0xff;
   if (seg.aux0 !== secondHand) {
@@ -10487,7 +10495,7 @@ function modeMatripix(seg: Segment): void {
 
   if (seg.call === 0) pixels.fill(BLACK);
 
-  const usNow = seg.now * 1000;
+  const usNow = (seg.now * 1000) >>> 0;
   const secondHand =
     Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) % 16;
   if (seg.aux0 !== secondHand) {
@@ -10822,7 +10830,7 @@ function modeFreqwave(seg: Segment): void {
 
   if (seg.call === 0) seg.fill(BLACK);
 
-  const usNow = seg.now * 1000;
+  const usNow = (seg.now * 1000) >>> 0;
   const secondHand =
     Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) % 16;
   if (seg.aux0 !== secondHand) {
@@ -10871,7 +10879,7 @@ function modeFreqmatrix(seg: Segment): void {
 
   if (seg.call === 0) seg.fill(BLACK);
 
-  const usNow = seg.now * 1000;
+  const usNow = (seg.now * 1000) >>> 0;
   const secondHand =
     Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) % 16;
   if (seg.aux0 !== secondHand) {
@@ -10933,7 +10941,7 @@ function modeWaterfall(seg: Segment): void {
     seg.aux0 = 255;
   }
 
-  const usNow = seg.now * 1000;
+  const usNow = (seg.now * 1000) >>> 0;
   const secondHand =
     (Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) + 1) & 0xff;
   if (seg.aux0 !== secondHand) {
@@ -11184,7 +11192,7 @@ function modeDJLight(seg: Segment): void {
 
   if (seg.call === 0) seg.fill(BLACK);
 
-  const usNow = seg.now * 1000;
+  const usNow = (seg.now * 1000) >>> 0;
   const secondHand =
     (Math.trunc(Math.trunc(usNow / (256 - seg.speed)) / 500) + 1) & 0xff;
   if (seg.aux0 !== secondHand) {

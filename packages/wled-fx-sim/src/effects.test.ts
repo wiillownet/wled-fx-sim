@@ -2153,3 +2153,48 @@ describe('device memory budgets cap the per-segment arrays', () => {
     expect(sumFrames(90, 2000, [0, 40, 120, 300])).toBe(6149); // 7086 uncapped
   });
 });
+
+describe('uint32 clocks roll over where the hardware ones do', () => {
+  // Two separate rollovers, both reached only well into a long preview:
+  //   micros() is uint32 microseconds, so it wraps at ~71.6 min. Seven bodies
+  //   divide it by `(256 - speed) * 500`, and 256 - speed is generally not a
+  //   power of two, so the fold has to land on the product.
+  //   Color Clouds' `now * volSpeed` wraps from ~4.7 h. Its divisor of 8 *is*
+  //   a power of two, which is not enough here: perlin16 takes uint32_t
+  //   parameters and perlin2D_raw reads the whole word as `y >> 16`, so
+  //   nothing downstream folds the surviving 2^29 away.
+  const sumFrames = (
+    fxId: number,
+    base: number,
+    frames: number,
+    sx: number,
+  ) => {
+    const sim = createEffectSim(fxId, {
+      length: 16,
+      width: 8,
+      height: 8,
+      sx,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+    });
+    let total = 0;
+    for (let i = 0; i < frames; i++)
+      for (const p of sim.frame(base + i * 23)) total += p[0] + p[1] + p[2];
+    return total;
+  };
+
+  it('Pixelwave (129) re-runs its secondHand after micros() wraps', () => {
+    expect(sumFrames(129, 5_000_000, 40, 100)).toBe(38993); // 12778 unwrapped
+    expect(sumFrames(129, 5_000, 40, 100)).toBe(24102); // unchanged before the wrap
+  });
+
+  it('Funky Plank (160) wraps on the same clock in 2D', () => {
+    expect(sumFrames(160, 5_000_000, 40, 100)).toBe(105672); // 117200 unwrapped
+  });
+
+  it('Color Clouds (218) wraps its noise time despite a power-of-2 divisor', () => {
+    expect(sumFrames(218, 25_000_000, 40, 200)).toBe(100720); // 150721 unwrapped
+    expect(sumFrames(218, 5_000, 40, 200)).toBe(117274); // unchanged before the wrap
+  });
+});
