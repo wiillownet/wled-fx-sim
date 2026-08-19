@@ -1562,13 +1562,16 @@ function auroraColorForLed(
   const offset = Math.abs(ledScaled - w.center);
   const offsetFactor = Math.trunc(offset / w.width);
   if (offsetFactor > AW_SCALE) return [0, 0, 0];
+  // uint32 arithmetic upstream: both products can reach ~2^32, so a signed
+  // shift would read them back negative and brighten the wave core instead
+  // of dimming it.
   let brightness = AW_SCALE - offsetFactor;
-  brightness = (brightness * ageFactor) >> AW_SHIFT;
-  brightness = (brightness * w.basealpha) >> AW_SHIFT;
+  brightness = (brightness * ageFactor) >>> AW_SHIFT;
+  brightness = (brightness * w.basealpha) >>> AW_SHIFT;
   return [
-    (w.basecolor[0] * brightness) >> AW_SHIFT,
-    (w.basecolor[1] * brightness) >> AW_SHIFT,
-    (w.basecolor[2] * brightness) >> AW_SHIFT,
+    (w.basecolor[0] * brightness) >>> AW_SHIFT,
+    (w.basecolor[1] * brightness) >>> AW_SHIFT,
+    (w.basecolor[2] * brightness) >>> AW_SHIFT,
   ];
 }
 

@@ -239,6 +239,28 @@ describe('Rain (43) spark index', () => {
   });
 });
 
+describe('Aurora (38) brightness stays unsigned', () => {
+  it('shifts its 32-bit brightness products logically', () => {
+    // AuroraWave::getColorForLED multiplies two AW_SCALE-scaled uint32 values
+    // (up to 65536 * 65535) before shifting back down. A signed shift reads
+    // any product past 2^31 as negative, which brightens the core of a wave
+    // in the middle of its life rather than dimming it.
+    const sim = createEffectSim(38, {
+      length: 60,
+      sx: 24,
+      ix: 200,
+      pal: 0,
+      seed: 0x1234,
+      colors: [[255, 160, 0], BLACK_RGB, BLACK_RGB],
+    });
+    let sum = 0;
+    for (let t = 0; t <= 4000; t += 200) {
+      for (const px of sim.frame(t)) sum += px[0] + px[1] + px[2];
+    }
+    expect(sum).toBe(120014); // 120692 with the signed shift
+  });
+});
+
 describe('beatsin bpm is a uint16 parameter', () => {
   it('wraps Frizzles (177) negative bpm at 16 bits, not 8', () => {
     // beatsin8_t's first parameter is uint16_t, and Frizzles feeds it
