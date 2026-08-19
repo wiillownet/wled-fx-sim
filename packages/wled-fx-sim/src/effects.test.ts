@@ -2198,3 +2198,38 @@ describe('uint32 clocks roll over where the hardware ones do', () => {
     expect(sumFrames(218, 5_000, 40, 200)).toBe(117274); // unchanged before the wrap
   });
 });
+
+describe('Tetrix (44) keeps its palette index a byte', () => {
+  // `drop->col += 8` on a `uint8_t col` (FX.cpp:3956), reached only on the
+  // "One color" path and only once per completed stack, so it takes ~33 stacks
+  // to reach the wrap. It is observable because Tetrix asks for a non-moving
+  // palette lookup, which is LINEARBLEND_NOWRAP here, and that path remaps the
+  // full unsigned index before narrowing (colors.cpp:118-122) -- an index of
+  // 256 lands on 240, not back on 0.
+  const lightOver = (from: number, to: number) => {
+    const sim = createEffectSim(44, {
+      length: 8,
+      dimensions: '1d',
+      sx: 255,
+      ix: 255,
+      pal: 11,
+      check1: true,
+      seed: 0x1234,
+    });
+    let total = 0;
+    for (let i = 0; i < to; i++) {
+      const px = sim.frame(i * 23);
+      if (i >= from)
+        for (const p of px) total += p[0] + p[1] + p[2];
+    }
+    return total;
+  };
+
+  it('wraps the colour index after enough stacks', () => {
+    expect(lightOver(3400, 4200)).toBe(374092); // 348859 unwrapped
+  });
+
+  it('is unchanged before the index gets there', () => {
+    expect(lightOver(0, 400)).toBe(143866);
+  });
+});
