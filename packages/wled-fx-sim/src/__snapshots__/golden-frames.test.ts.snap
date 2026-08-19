@@ -44553,23 +44553,23 @@ exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 18
 exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 184 (alt) 1`] = `
 [
   [
-    149,
-    16,
+    136,
+    72,
     0,
   ],
   [
     213,
-    166,
+    196,
     0,
   ],
   [
     128,
-    104,
+    121,
     0,
   ],
   [
-    11,
-    4,
+    10,
+    6,
     0,
   ],
   [
@@ -44594,22 +44594,22 @@ exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 18
   ],
   [
     2,
-    0,
+    1,
     0,
   ],
   [
     105,
-    82,
+    97,
     0,
   ],
   [
     211,
-    172,
+    200,
     0,
   ],
   [
-    165,
-    63,
+    150,
+    101,
     0,
   ],
   [

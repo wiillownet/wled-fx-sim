@@ -142,7 +142,9 @@ export function beatsin8_t(
 ): number {
   const beat = beat8(bpm, now, timebase);
   const bs = sin8_t(u8(beat + phase));
-  return lowest + scale8(bs, highest - lowest);
+  // uint8_t at every step upstream (util.cpp:545): the range width and the
+  // result both wrap, so a `highest` past 255 or a sum past 255 folds.
+  return u8(lowest + scale8(bs, highest - lowest));
 }
 
 /** 16-bit sine oscillating lowest..highest at a given BPM -- WLED beatsin16_t. */
@@ -156,7 +158,7 @@ export function beatsin16_t(
 ): number {
   const beat = beat16(bpm, now, timebase);
   const bs = u16(sin16_t(u16(beat + phase)) + 32768);
-  return lowest + scale16(bs, highest - lowest);
+  return u16(lowest + scale16(bs, highest - lowest));
 }
 
 /** 16-bit sine oscillating lowest..highest at a Q8.8 BPM -- WLED beatsin88_t. */
@@ -170,7 +172,7 @@ export function beatsin88_t(
 ): number {
   const beat = beat88(bpm88, now, timebase);
   const bs = u16(sin16_t(u16(beat + phase)) + 32768);
-  return lowest + scale16(bs, highest - lowest);
+  return u16(lowest + scale16(bs, highest - lowest));
 }
 
 // --- packed-color helpers (uint32 0xWWRRGGBB), ported from WLED colors.cpp ---

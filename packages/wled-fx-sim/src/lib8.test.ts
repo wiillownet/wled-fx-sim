@@ -58,6 +58,18 @@ describe('beatsin8_t', () => {
   it('is deterministic for a given now', () => {
     expect(beatsin8_t(120, 1234, 0, 255)).toBe(beatsin8_t(120, 1234, 0, 255));
   });
+
+  it('narrows to uint8 the way util.cpp does', () => {
+    // lowest/highest/rangewidth/result are all uint8_t upstream, so a caller
+    // that adds two sliders past 255 (Wavesins, 184) wraps rather than
+    // overflowing the byte the result is used as.
+    for (let t = 0; t < 4000; t += 37) {
+      const wide = beatsin8_t(90, t, 128, 328);
+      expect(wide).toBe(beatsin8_t(90, t, 128, 328 & 0xff));
+      expect(wide).toBeGreaterThanOrEqual(0);
+      expect(wide).toBeLessThanOrEqual(255);
+    }
+  });
 });
 
 describe('color helpers (packed uint32)', () => {
