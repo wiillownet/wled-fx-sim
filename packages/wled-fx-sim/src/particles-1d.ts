@@ -651,8 +651,12 @@ export class ParticleSystem1D {
       const mass1 = PS_P_RADIUS_1D + this.advPartProps[partIdx1].size;
       const mass2 = PS_P_RADIUS_1D + this.advPartProps[partIdx2].size;
       const totalmass = mass1 + mass2 - 2;
-      massratio1 = (mass2 << 8) / totalmass;
-      massratio2 = (mass1 << 8) / totalmass;
+      // Integer division upstream (FXparticleSystem.cpp:1678-1679): both
+      // operands are uint32_t, so the ratio truncates before it is used. It
+      // reaches `(impulse * massratio) >> 7`, and ToInt32 there truncates the
+      // *product*, which does not undo a fraction carried in the ratio.
+      massratio1 = Math.trunc((mass2 << 8) / totalmass);
+      massratio2 = Math.trunc((mass1 << 8) / totalmass);
     }
     const dv = p2.vx - p1.vx;
     const absdv = Math.abs(dv);

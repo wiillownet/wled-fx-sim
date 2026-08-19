@@ -202,3 +202,32 @@ describe('PS Hourglass (207)', () => {
     expect(snaps.size).toBeGreaterThan(1);
   });
 });
+
+describe('collision mass ratio is an integer', () => {
+  // `massratio1 = (mass2 << 8) / totalmass` is integer division upstream, both
+  // operands being uint32_t (FXparticleSystem.cpp:1678-1679). The 2D engine
+  // already truncated it; the 1D one did not. Carrying the fraction is not
+  // harmless: it reaches `(impulse * massratio) >> 7`, and the ToInt32 there
+  // truncates the product, so it cannot undo a fraction held in the ratio.
+  it('PS Starburst (211) settles differently with a truncated ratio', () => {
+    const sim = createEffectSim(211, {
+      length: 16,
+      width: 8,
+      height: 8,
+      sx: 200,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+      check1: true,
+      check2: true,
+      check3: true,
+      custom1: 200,
+      custom2: 120,
+      custom3: 31,
+    });
+    let total = 0;
+    for (let i = 0; i < 400; i++)
+      for (const p of sim.frame(i * 23)) total += p[0] + p[1] + p[2];
+    expect(total).toBe(2827012); // 2730505 with the fraction carried
+  });
+});
