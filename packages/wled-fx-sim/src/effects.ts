@@ -2951,8 +2951,12 @@ function modeTwinkleup(seg: Segment): void {
   const localPrng = new PRNG(535);
   for (let i = 0; i < seg.length; i++) {
     const ranstart = localPrng.random8();
+    // 16 * strip.now is a uint32 product upstream (wraps at ~3.1 days) and the
+    // divisor is not generally a power of two, so the sin8 mask cannot absorb
+    // the difference -- fold before the divide.
     let pixBri = sin8(
-      (ranstart + Math.trunc((16 * seg.now) / (256 - seg.speed))) & 0xff,
+      (ranstart + Math.trunc(((16 * seg.now) >>> 0) / (256 - seg.speed))) &
+        0xff,
     );
     if (localPrng.random8() > seg.intensity) pixBri = 0;
     seg.setPixelColor(

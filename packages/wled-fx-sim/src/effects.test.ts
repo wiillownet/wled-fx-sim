@@ -1916,6 +1916,19 @@ describe('uint32 time products fold before an integer divide', () => {
     expect(sumFrames(147, params, [late, late + 500, late + 1500])).toBe(31289); // 30851 unwrapped
   });
 
+  it('Twinkleup (106) past the ~3.1 day wrap of strip.now * 16', () => {
+    const late = 4 * 86400000;
+    const params = {
+      length: 60,
+      dimensions: '1d' as const,
+      sx: 100, // divisor 156, not a power of two
+      ix: 220,
+      pal: 11,
+      seed: 0x1234,
+    };
+    expect(sumFrames(106, params, [late, late + 500, late + 1500])).toBe(26294); // 28820 unwrapped
+  });
+
   it('Plasma Ball (178) past the ~6.2 day wrap of strip.now * 8', () => {
     const late = 7 * 86400000;
     const params = {
