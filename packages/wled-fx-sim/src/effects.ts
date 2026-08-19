@@ -1443,7 +1443,9 @@ function colorwavesPrideBase(seg: Segment, isPride2015: boolean): void {
 
     brightnesstheta16 += brightnessthetainc16;
     const b16 = sin16(brightnesstheta16 & 0xffff) + 32768;
-    const bri16 = (b16 * b16) / 65536;
+    // uint32 integer division upstream: bri16 truncates before it is scaled
+    // by brightdepth, so the fraction must not survive into the next divide.
+    const bri16 = Math.trunc((b16 * b16) / 65536);
     let bri8 = Math.trunc((bri16 * brightdepth) / 65536);
     bri8 = (bri8 + (255 - brightdepth)) & 0xff;
 
@@ -4147,7 +4149,9 @@ function modeAndroid(seg: Segment): void {
 // --- Noise 1 / Noise16_1 (70) -----------------------------------------------
 function modeNoise16_1(seg: Segment): void {
   const scale = 320; // the "zoom factor" for the noise
-  seg.step += 1 + Math.trunc(seg.speed / 16);
+  // SEGENV.step is uint32 and shift_y divides it by 42; a non-power-of-2
+  // divisor does not preserve the wrap, so fold at the accumulate.
+  seg.step = (seg.step + 1 + Math.trunc(seg.speed / 16)) >>> 0;
 
   for (let i = 0; i < seg.length; i++) {
     const shiftX = beatsin8_t(11, seg.now); // swings @ 17bpm, lowest/highest default 0/255

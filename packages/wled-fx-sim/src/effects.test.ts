@@ -1947,3 +1947,62 @@ describe('Noise 2 (71) keeps its noise origin unsigned', () => {
     );
   });
 });
+
+describe('Colorwaves/Pride base truncates bri16 before scaling it', () => {
+  // mode_colorwaves_pride_base (FX.cpp:2029) computes
+  // `unsigned bri16 = (uint32_t)b16 * b16 / 65536` -- an integer division --
+  // and only then scales by brightdepth and divides again. Carrying the first
+  // fraction into the second divide shifts the odd pixel up by one step; it
+  // is rare (~0.07% of channels) but it is every frame of both effects, and
+  // the golden config at length 16 does not happen to catch it.
+  const params = {
+    length: 120,
+    dimensions: '1d' as const,
+    sx: 200,
+    ix: 180,
+    pal: 11,
+    seed: 0x1234,
+  };
+
+  it('Pride 2015 (63) rounds its brightness down', () => {
+    const sim = createEffectSim(63, params);
+    expect(sim.frame(0)[103][0]).toBe(58); // 59 with the fraction kept
+  });
+
+  it('Colorwaves (67) rounds its brightness down', () => {
+    const sim = createEffectSim(67, params);
+    expect(sim.frame(0)[103][0]).toBe(114); // 115 with the fraction kept
+    expect(sim.frame(500)[17][1]).toBe(146); // 147 with the fraction kept
+  });
+});
+
+describe('Noise 1 (70) folds its step accumulator at uint32', () => {
+  // shift_y is `SEGENV.step / 42` (FX.cpp:2241). 42 is not a power of two, so
+  // the 2^32 wrap does not survive the divide and perlin16's own fold cannot
+  // absorb it. step climbs by up to 16/frame, so this lands after ~74 days.
+  const sumAt = (startStep: number) => {
+    const seg = new Segment(40, 0x1234);
+    seg.speed = 255;
+    seg.intensity = 200;
+    // A real palette is load-bearing: this effect passes no per-pixel
+    // brightness, so on palette 0 every pixel is the primary color and the
+    // noise position never reaches the output.
+    seg.palette = 11;
+    seg.colors = [0xffffff, 0, 0];
+    seg.step = startStep;
+    let total = 0;
+    for (let f = 0; f < 3; f++) {
+      seg.now = f * STEP_MS;
+      seg.refreshPalette();
+      EFFECT_SIMS[70](seg);
+      seg.call++;
+      for (let i = 0; i < seg.length; i++) total += seg.pixels[i];
+    }
+    return total;
+  };
+
+  it('wraps rather than running past 2^32', () => {
+    expect(sumAt(2 ** 32 + 5000)).toBe(1226548420); // 1518882696 unwrapped
+    expect(sumAt(5000)).toBe(1226548420);
+  });
+});
