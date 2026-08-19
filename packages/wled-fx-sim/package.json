@@ -1,6 +1,6 @@
 {
   "name": "@wiillownet/wled-fx-sim",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Headless TypeScript preview simulator of WLED's effects: FX.cpp ports, 1D/2D particle engines, and the 2D matrix layer, ported from WLED v16.0.0. Unofficial. Not affiliated with or endorsed by the WLED/FastLED projects.",
   "license": "EUPL-1.2",
   "type": "module",
