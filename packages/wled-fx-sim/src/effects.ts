@@ -537,7 +537,9 @@ function sparkleFlashBase(seg: Segment, count: number): void {
       seg.setPixelColor(i, seg.color_from_palette(i, true, false, 0));
     }
   }
-  if (seg.now - seg.aux0 > seg.step) {
+  // uint32 subtraction upstream: while strip.now is still below aux0 the
+  // difference wraps huge and the branch is taken every frame (FX.cpp:789).
+  if (((seg.now - seg.aux0) >>> 0) > seg.step) {
     if (seg.rng.random8((255 - seg.intensity) >> 4) === 0) {
       for (let i = 0; i < count; i++) {
         seg.setPixelColor(seg.rng.random16(seg.length), seg.color(1));
@@ -1057,7 +1059,11 @@ function modeMultiStrobe(seg: Segment): void {
     }
   }
 
-  if (seg.now - seg.step > seg.aux0) {
+  // Firmware compares `strip.now - SEGENV.aux0 > SEGENV.step` (FX.cpp:842).
+  // The two forms agree once strip.now passes aux0, but the uint32 subtraction
+  // wraps below it, so the first aux0 ms (up to 5.15 s at speed 0) strobe on
+  // every frame. Kept in firmware's order rather than the tidier algebra.
+  if (((seg.now - seg.aux0) >>> 0) > seg.step) {
     seg.aux1++;
     if (seg.aux1 > count) seg.aux1 = 0;
     seg.step = seg.now;

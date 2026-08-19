@@ -538,7 +538,13 @@ describe('animated effects change over time', () => {
   // through color_from_palette with mcol=0 and default pbri, so the default
   // palette returns the raw segment color regardless of the noise index) --
   // see its spot check for a real-palette proof it animates.
-  const staticIds = new Set([0, 98, 83, 84, 85, 65, 70, 69, 73, 21, 207, 180]);
+  // Hyper Sparkle (22) is the same one-frame-event case as Flash Sparkle: it
+  // renders 37 distinct frames over a 7 s run and flashes on 36 of 305 frames,
+  // but the seven sample points below all land between flashes. Densely
+  // sampled in its own spot check.
+  const staticIds = new Set([
+    0, 98, 83, 84, 85, 65, 70, 69, 73, 21, 22, 207, 180,
+  ]);
   const animated = portedFxIds().filter((id) => !staticIds.has(id));
   it.each(animated)('effect %i differs across a long window', (fxId) => {
     const sim = createEffectSim(fxId, {
@@ -1696,6 +1702,21 @@ describe('spot checks against known behavior', () => {
     expect(sawFlash).toBe(true);
   });
 
+  it('Hyper Sparkle (22) eventually flashes against a dark background', () => {
+    const sim = createEffectSim(22, {
+      length: 30,
+      sx: 200,
+      ix: 128,
+      colors: [BLACK_RGB, [255, 255, 255], BLACK_RGB],
+    });
+    let sawFlash = false;
+    for (let t = 0; t < 4000; t += FRAMETIME) {
+      if (sim.frame(t).some((px) => px[0] + px[1] + px[2] > 400))
+        sawFlash = true;
+    }
+    expect(sawFlash).toBe(true);
+  });
+
   it('Random Color (5) crossfades between successive random wheel colors', () => {
     const sim = createEffectSim(5, { length: 10, sx: 200, ix: 128 });
     const colors = new Set<string>();
@@ -2034,5 +2055,37 @@ describe('CRGB |= is a per-channel maximum, not a bitwise or', () => {
 
   it("Pacifica (101) floors its channels rather than or-ing them", () => {
     expect(lightSum(101, 0)).toBe(10220); // 11223 with a bitwise or
+  });
+});
+
+describe('now - aux0 is a uint32 subtraction', () => {
+  // FX.cpp:789/809/842 all compare `strip.now - SEGENV.aux0 > SEGENV.step`.
+  // aux0 is uint16_t and promotes into the unsigned subtraction, so while
+  // strip.now is still below aux0 the difference wraps huge and the branch is
+  // taken every frame. Multi Strobe (25) had additionally been rewritten as
+  // `now - step > aux0`, which is the same algebra but loses the wrap.
+  const frameSum = (fxId: number, sx: number, at: number[]) => {
+    const sim = createEffectSim(fxId, {
+      length: 30,
+      dimensions: '1d',
+      sx,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+    });
+    return at.map((ms) =>
+      sim.frame(ms).reduce((a, p) => a + p[0] + p[1] + p[2], 0),
+    );
+  };
+
+  it('Flash Sparkle (21) flashes through the startup window', () => {
+    const total = frameSum(21, 60, [0, 46, 92, 161]).reduce((a, b) => a + b, 0);
+    expect(total).toBe(41599); // 41940 without the wrap
+  });
+
+  it('Multi Strobe (25) advances a frame earlier', () => {
+    // aux0 is rewritten to 15 or 50 before the compare, so the window here is
+    // only the first frame or two -- but it is visible on exactly those.
+    expect(frameSum(25, 0, [0, 23, 46])).toEqual([12450, 10485, 12450]); // [12450, 12450, 10485] without
   });
 });
