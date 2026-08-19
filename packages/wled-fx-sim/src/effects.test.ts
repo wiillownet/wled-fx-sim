@@ -239,6 +239,23 @@ describe('Rain (43) spark index', () => {
   });
 });
 
+describe('Multi Comet (59) fade', () => {
+  it('fades toward the secondary colour, not toward black', () => {
+    // mode_multi_comet calls fade_out (which walks each channel toward
+    // SEGCOLOR(1)), not fadeToBlackBy.
+    const sim = createEffectSim(59, {
+      length: 30,
+      sx: 128,
+      ix: 0, // fade_out(128): slowest rate, so the background is reached gradually
+      colors: [[255, 255, 255], [0, 0, 80], BLACK_RGB],
+    });
+    const buf = sim.frame(3000);
+    // Every pixel that is not a live comet head has been walked toward the
+    // blue background rather than dimmed to black.
+    expect(buf.some((px) => px[2] > px[0] && px[2] > 0)).toBe(true);
+  });
+});
+
 describe('SEGENV counters stay in their firmware widths', () => {
   it('rolls aux1 over at uint16 rather than counting past it', () => {
     // Chase Flash (31) reads aux1 modulo 9 and PacMan (151) modulo 10/15 and

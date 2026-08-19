@@ -4565,7 +4565,7 @@ function modeMultiComet(seg: Segment): void {
   const buf = seg.allocateData(2 * MAX_COMETS);
   const comets = new Uint16Array(buf.buffer, buf.byteOffset, MAX_COMETS);
 
-  seg.fadeToBlackBy((seg.intensity >> 1) + 128);
+  seg.fade_out((seg.intensity >> 1) + 128);
 
   const hasCol2 = seg.color(2) !== 0;
   for (let i = 0; i < MAX_COMETS; i++) {
