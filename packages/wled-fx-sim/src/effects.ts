@@ -2318,19 +2318,20 @@ function modeOscillate(seg: Segment): void {
     oscillators = [
       {
         pos: Math.trunc(seg.length / 4),
-        size: Math.trunc(seg.length / 8),
+        size: Math.trunc(seg.length / 8) & 0xff,
         dir: 1,
         speed: 1,
       },
       {
-        pos: Math.trunc((seg.length / 4) * 3),
-        size: Math.trunc(seg.length / 8),
+        // SEGLEN/4*3 and SEGLEN/4*2: the division is integer and comes first
+        pos: Math.trunc(seg.length / 4) * 3,
+        size: Math.trunc(seg.length / 8) & 0xff,
         dir: 1,
         speed: 2,
       },
       {
-        pos: Math.trunc((seg.length / 4) * 2),
-        size: Math.trunc(seg.length / 8),
+        pos: Math.trunc(seg.length / 4) * 2,
+        size: Math.trunc(seg.length / 8) & 0xff,
         dir: -1,
         speed: 1,
       },
@@ -2343,7 +2344,7 @@ function modeOscillate(seg: Segment): void {
 
   for (const osc of oscillators) {
     if (it !== seg.step) osc.pos += osc.dir * osc.speed;
-    osc.size = Math.trunc(seg.length / (3 + Math.trunc(seg.intensity / 8)));
+    osc.size = Math.trunc(seg.length / (3 + Math.trunc(seg.intensity / 8))) & 0xff; // uint8_t field
     // Firmware detects wraparound via uint16_t underflow (pos goes huge, not
     // negative); this sim's pos is a plain signed number, so it checks the
     // actual intent -- pos dropping below zero -- directly instead.

@@ -260,6 +260,21 @@ describe('integer division at firmware widths', () => {
     }
     expect(pos).toEqual([0, 7, 14, 22]); // 0, 8, 15, 22 without the truncation
   });
+
+  it('Oscillate (62) seeds its bars from SEGLEN/4 before multiplying', () => {
+    // SEGLEN/4*3 and SEGLEN/4*2 divide first, in integers: on 30 pixels that
+    // is 7*3 = 21 and 7*2 = 14, not trunc(7.5*3) = 22 and trunc(7.5*2) = 15.
+    const seg = new Segment(30, 0x1234);
+    seg.speed = 0;
+    seg.intensity = 128; // bar half-width 1, so each centre lights 3 pixels
+    seg.colors = [0xff0000, 0x00ff00, 0x0000ff];
+    seg.now = 0;
+    seg.refreshPalette();
+    EFFECT_SIMS[62](seg);
+    const lit: number[] = [];
+    for (let i = 0; i < seg.length; i++) if (seg.pixels[i]) lit.push(i);
+    expect(lit).toEqual([6, 7, 8, 13, 14, 15, 20, 21, 22]);
+  });
 });
 
 describe('Multi Comet (59) fade', () => {
