@@ -88,6 +88,19 @@ const WHITE = 0xffffff;
 const BLACK = 0x000000;
 
 /**
+ * Firmware sizes a few effects' arrays off a per-segment memory budget:
+ * `FAIR_DATA_PER_SEG` (MAX_SEGMENT_DATA / MAX_NUM_SEGMENTS, FX.h:101) doubled
+ * once for each of two active-segment thresholds. On WLED's default tier
+ * (64k / 32 segments) that base is 2048, and this sim presents a single
+ * segment, which clears both thresholds -- so 2048 * 4.
+ *
+ * The "256 for ESP8266, 640 for ESP32" figures at FX.h:99 and repeated at
+ * FX.cpp:3616/3739 predate the 64k bump and are stale; only the ESP8266 half
+ * still holds (6k / 16 = 384, doubling to 1536).
+ */
+const SEG_DATA_BUDGET = 2048 * 4;
+
+/**
  * FastLED abs8(): the parameter is `int8_t`, so the argument narrows to a
  * signed byte *before* the absolute value is taken (fastled_slim.h:17). A
  * float argument truncates toward zero on the way in, as the C conversion
@@ -2702,9 +2715,10 @@ interface Spark {
   colIndex: number;
 }
 
-// Firmware caps usable popcorn kernels by a device memory budget
-// (FAIR_DATA_PER_SEG, 256-640 bytes depending on hardware) this sim has no
-// equivalent for -- always uses the firmware max (21).
+// maxNumPopcorn (FX.cpp:3430) is a hard 21; firmware's memory clamp only ever
+// reduces it, and in 1D it cannot -- 21 kernels x 20 bytes = 420, inside the
+// default tier's *undoubled* FAIR_DATA_PER_SEG of 2048 (see SEG_DATA_BUDGET).
+// Only ESP8266, at 384, drops to 20.
 const MAX_POPCORN = 21;
 const popcornState = new WeakMap<Segment, Spark[]>();
 
@@ -2984,7 +2998,7 @@ interface RippleDrop {
   color: number;
 }
 
-const MAX_RIPPLES = 100; // firmware's ESP32 default; no device memory ceiling here
+const MAX_RIPPLES = 100; // FX.cpp:2490, the #else tier (ESP8266 uses 56)
 const rippleState = new WeakMap<Segment, RippleDrop[]>();
 
 function rippleBase(seg: Segment, blurAmount = 0): void {
@@ -3568,7 +3582,7 @@ const SPOT_TYPE_2X_DOT = 3;
 const SPOT_TYPE_3X_DOT = 4;
 const SPOT_TYPE_4X_DOT = 5;
 const SPOT_TYPES_COUNT = 6;
-const SPOT_MAX_COUNT = 49; // firmware's ESP32 default; no device memory ceiling here
+const SPOT_MAX_COUNT = 49; // FX.cpp:4485, the #else tier (ESP8266 uses 17)
 
 const dancingShadowsState = new WeakMap<Segment, Spotlight[]>();
 
@@ -3975,12 +3989,13 @@ function modeDrip(seg: Segment): void {
 // --- Fireworks Starburst (89) ---------------------------------------------------
 // Per-star struct array; each star bursts into fragments that fly outward
 // (decelerating) and fade, mirrored on both sides of the ignition point.
-// Firmware sizes numStars/STARBURST_MAX_FRAG off a per-segment memory budget
-// (FAIR_DATA_PER_SEG / sizeof(star)); this sim has no memory ceiling to
-// reconcile with, so numStars is just the length-driven formula uncapped, and
-// STARBURST_MAX_FRAG uses firmware's ESP32 default (10; ESP8266 uses 8) --
-// same category of assumption as the device-memory-budget notes elsewhere.
+// STARBURST_MAX_FRAG is firmware's ESP32 default (10; ESP8266 uses 8), which
+// makes `sizeof(star)` 60: CRGB(3) + 1 pad, two uint32_t, a float, a uint16_t
+// + 2 pad, then float[10] -- matching the struct's own "60 bytes / star" note
+// at FX.cpp:3602.
 const STARBURST_MAX_FRAG = 10;
+/** FX.cpp:3620, `maxData / sizeof(star)`. Caps numStars from 1088px up. */
+const STARBURST_MAX_STARS = Math.trunc(SEG_DATA_BUDGET / 60);
 
 interface Star {
   color: RGB;
@@ -4000,7 +4015,7 @@ const starburstStars = new WeakMap<Segment, Star[]>();
 function modeStarburst(seg: Segment): void {
   if (seg.length <= 1) return fallbackStatic(seg);
 
-  const numStars = 1 + (seg.length >> 3);
+  const numStars = Math.min(1 + (seg.length >> 3), STARBURST_MAX_STARS);
 
   let stars = starburstStars.get(seg);
   if (!stars || stars.length !== numStars) {
@@ -4281,12 +4296,13 @@ function modeExplodingFireworks(seg: Segment): void {
 
   let state = fireworksState.get(seg);
   if (!state) {
-    // Firmware caps spark count by a device memory budget (FAIR_DATA_PER_SEG)
-    // that scales up further when few segments are active; this sim has no
-    // memory ceiling to reconcile with (same category as Popcorn/Ripple), so
-    // it always uses the uncapped formula (5 + rows/2, cols=1 in 1D) rather
-    // than also computing and min-ing against the device-memory cap.
-    const numSparks = 5 + (rows >> 1);
+    // FX.cpp:3743-3745: `min(5 + ((rows*cols) >> 1), maxData / sizeof(spark))`,
+    // with cols == 1 in 1D and sizeof(spark) == 20 (FX.cpp:3422). The cap only
+    // bites from 808px up.
+    const numSparks = Math.min(
+      5 + (rows >> 1),
+      Math.trunc(SEG_DATA_BUDGET / 20),
+    );
     state = {
       sparks: Array.from({ length: numSparks }, () => ({
         pos: 0,

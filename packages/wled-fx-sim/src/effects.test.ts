@@ -2117,3 +2117,39 @@ describe('now - aux0 is a uint32 subtraction', () => {
     expect(frameSum(25, 0, [0, 23, 46])).toEqual([12450, 10485, 12450]); // [12450, 12450, 10485] without
   });
 });
+
+describe('device memory budgets cap the per-segment arrays', () => {
+  // FX.cpp:3616-3620 and 3739-3743 both size an array off FAIR_DATA_PER_SEG
+  // doubled twice (one active segment clears both thresholds): 8192 bytes on
+  // WLED's default tier. Divided by the struct sizes the firmware's own
+  // comments give, that is 136 stars (60 bytes) and 409 sparks (20 bytes).
+  // Both caps sit far enough out that the golden geometries never reach them,
+  // so these are the only assertions that exercise them.
+  const sumFrames = (fxId: number, length: number, frames: number[]) => {
+    const sim = createEffectSim(fxId, {
+      length,
+      dimensions: '1d',
+      sx: 200,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+    });
+    let total = 0;
+    for (let i = 0; i <= Math.max(...frames); i++) {
+      const px = sim.frame(i * 23);
+      if (frames.includes(i))
+        for (const p of px) total += p[0] + p[1] + p[2];
+    }
+    return total;
+  };
+
+  it('Fireworks Starburst (89) stops adding stars past 1088px', () => {
+    // 1 + (1200 >> 3) is 151 stars uncapped, 136 capped.
+    expect(sumFrames(89, 1200, [0, 40, 120, 300])).toBe(562308); // 676650 uncapped
+  });
+
+  it('Fireworks 1D (90) stops adding sparks past 808px', () => {
+    // 5 + (2000 >> 1) is 1005 sparks uncapped, 409 capped.
+    expect(sumFrames(90, 2000, [0, 40, 120, 300])).toBe(6149); // 7086 uncapped
+  });
+});
