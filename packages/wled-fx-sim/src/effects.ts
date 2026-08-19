@@ -424,7 +424,7 @@ function modeTheaterChaseRainbow(seg: Segment): void {
 // --- Running (15, mode_running_lights via running_base, saw=false) ----------
 function modeRunningLights(seg: Segment): void {
   const xScale = seg.intensity >> 2;
-  const counter = (seg.now * seg.speed) >> 9;
+  const counter = (seg.now * seg.speed) >>> 9;
   for (let i = 0; i < seg.length; i++) {
     const a = i * xScale - counter;
     const s = sin8(a & 0xff);
@@ -864,7 +864,7 @@ function modeFireworks(seg: Segment): void {
 function modeFire2012(seg: Segment): void {
   if (seg.length <= 1) return fallbackStatic(seg);
   const heat = seg.allocateData(seg.length);
-  const it = seg.now >> 5;
+  const it = seg.now >>> 5;
   const ignition = Math.max(3, Math.trunc(seg.length / 10)) & 0xff;
 
   // Step 1: cool down
@@ -1394,7 +1394,7 @@ function modeSunrise(seg: Segment): void {
   let s10SinceStart = Math.trunc((seg.now - seg.step) / 100);
 
   if (seg.speed > 120) {
-    const counter = (seg.now >> 1) * (((seg.speed - 120) >> 1) + 1);
+    const counter = (seg.now >>> 1) * (((seg.speed - 120) >> 1) + 1);
     stage = triwave16(counter & 0xffff);
   } else if (seg.speed) {
     let durMins = seg.speed;
@@ -2160,7 +2160,7 @@ function tristateSquare8(
 }
 
 function modeWashingMachine(seg: Segment): void {
-  const speed = tristateSquare8((seg.now >> 7) & 0xff, 90, 15);
+  const speed = tristateSquare8((seg.now >>> 7) & 0xff, 90, 15);
   seg.step += Math.trunc((speed * 2048) / (512 - seg.speed));
   const term = Math.trunc(seg.intensity / 25) + 1;
   for (let i = 0; i < seg.length; i++) {
@@ -3383,7 +3383,7 @@ function modePhasedNoise(seg: Segment): void {
 // --- Saw (16) ----------------------------------------------------------------
 function modeSaw(seg: Segment): void {
   const xScale = seg.intensity >> 2;
-  const counter = (seg.now * seg.speed) >> 9;
+  const counter = (seg.now * seg.speed) >>> 9;
 
   for (let i = 0; i < seg.length; i++) {
     let a = (i * xScale - counter) & 0xff;
@@ -5104,7 +5104,7 @@ function sinGap(inp: number): number {
 
 function modeRunningDual(seg: Segment): void {
   const xScale = seg.intensity >> 2;
-  const counter = (seg.now * seg.speed) >> 9;
+  const counter = (seg.now * seg.speed) >>> 9;
   for (let i = 0; i < seg.length; i++) {
     const a = i * xScale - counter;
     const s = sinGap(a);
@@ -5846,7 +5846,7 @@ function modeParticleHourglass(seg: Segment): void {
             basehue + Math.trunc((i * 1024) / ps.usedParticles);
           break;
         case 6:
-          ps.particles[i].hue = i + (seg.now >> 3);
+          ps.particles[i].hue = i + (seg.now >>> 3);
           break;
       }
     }
@@ -6067,7 +6067,7 @@ function modeParticleChase(seg: Segment): void {
       ps.particles[i].vx =
         1 +
         (seg.speed >> 2) +
-        (((sin16(seg.now >> 1) + 32767) * (seg.speed >> 2)) >> 16);
+        (((sin16(seg.now >>> 1) + 32767) * (seg.speed >> 2)) >> 16);
     }
   }
 
@@ -7072,7 +7072,7 @@ function mode2DSpaceships(seg: Segment2D): void {
   const cols = seg.width;
   const rows = seg.height;
 
-  const tb = seg.now >> 12; // every ~4s
+  const tb = seg.now >>> 12; // every ~4s
   if (tb > seg.step) {
     let dir = seg.aux0 + 1;
     dir += seg.rng.random8(3) - 1;
@@ -8635,7 +8635,7 @@ function modeParticleBox(seg: Segment2D): void {
     if (seg.check2) {
       // washing machine
       const speed = Math.trunc(
-        tristateSquare8((seg.now >> 7) & 0xff, 90, 15) /
+        tristateSquare8((seg.now >>> 7) & 0xff, 90, 15) /
           ((400 - seg.speed) >> 3),
       );
       seg.aux0 = (seg.aux0 + speed) & 0xffff;

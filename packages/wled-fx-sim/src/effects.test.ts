@@ -2233,3 +2233,34 @@ describe('Tetrix (44) keeps its palette index a byte', () => {
     expect(lightOver(0, 400)).toBe(143866);
   });
 });
+
+describe('shifts on strip.now are logical, not arithmetic', () => {
+  // `strip.now` is `unsigned long` (FX.h:955), so every `>>` upstream applies
+  // to a uint32 and never sign-extends. JS `>>` is ToInt32, so once the clock
+  // passes 2^31 the two disagree -- and that is not a distant corner: a caller
+  // passing wall-clock time lands there, since Date.now() >>> 0 has its top bit
+  // set today.
+  //
+  // Most such sites absorb the difference: `>>` and `>>>` of the same word
+  // differ by 2^(32-k), so any later `& 0xff` / `& 0xffff` erases it for k <=
+  // 16. Sweeping all 212 ported effects above 2^31 turns up exactly one that
+  // does not, because it compares the shifted value instead of masking it.
+  it('Spaceships (118) keeps turning past 2^31', () => {
+    const sim = createEffectSim(118, {
+      length: 16,
+      width: 8,
+      height: 8,
+      sx: 128,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+    });
+    let total = 0;
+    for (let i = 0; i < 120; i++)
+      for (const p of sim.frame(3_000_000_000 + i * 23))
+        total += p[0] + p[1] + p[2];
+    // `tb = now >> 12` goes negative, so `tb > SEGENV.step` never fires again
+    // and the ships stop picking new directions.
+    expect(total).toBe(438285); // 419990 with an arithmetic shift
+  });
+});
