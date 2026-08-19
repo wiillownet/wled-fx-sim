@@ -239,6 +239,38 @@ describe('Rain (43) spark index', () => {
   });
 });
 
+describe('SEGENV counters stay in their firmware widths', () => {
+  it('rolls aux1 over at uint16 rather than counting past it', () => {
+    // Chase Flash (31) reads aux1 modulo 9 and PacMan (151) modulo 10/15 and
+    // the speed divisor, so the uint16_t rollover changes what is drawn, not
+    // just the stored number. Seed the counter at its rollover point rather
+    // than running the ~65k frames it would take to get there.
+    for (const [id, sx] of [
+      [31, 255],
+      [151, 192],
+    ] as const) {
+      const seg = new Segment(60, 0x1234);
+      seg.speed = sx;
+      seg.intensity = 64;
+      seg.custom1 = 64;
+      seg.custom3 = 12;
+      seg.colors = [0xffa000, 0, 0];
+      for (let f = 0; f < 4; f++) {
+        seg.now = f * STEP_MS;
+        seg.refreshPalette();
+        EFFECT_SIMS[id](seg);
+        seg.call++;
+      }
+      seg.aux1 = 0xffff;
+      seg.step = 0; // both bodies tick their counter when now is past step
+      seg.now = 100000;
+      seg.refreshPalette();
+      EFFECT_SIMS[id](seg);
+      expect(seg.aux1, `fx ${id} aux1`).toBe(0);
+    }
+  });
+});
+
 describe('single-pixel fallback', () => {
   it('falls back to a solid fill wherever upstream guards SEGLEN <= 1', () => {
     // Every id here opens with `if (SEGLEN <= 1) FX_FALLBACK_STATIC` upstream.

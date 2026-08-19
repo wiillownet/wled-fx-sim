@@ -653,7 +653,7 @@ function modeChaseFlash(seg: Segment): void {
   let advance = true;
   const flashStep = seg.aux1 % (FLASH_COUNT * 2 + 1);
   if (now < seg.step) advance = false;
-  else seg.aux1++;
+  else seg.aux1 = (seg.aux1 + 1) & 0xffff; // uint16_t counter feeding the % above
 
   for (let i = 0; i < seg.length; i++) {
     seg.setPixelColor(i, seg.color_from_palette(i, true, false, 0));
@@ -4696,7 +4696,7 @@ function modePacman(seg: Segment): void {
 
   if (seg.now > seg.step) {
     seg.step = seg.now;
-    seg.aux1++;
+    seg.aux1 = (seg.aux1 + 1) & 0xffff; // uint16_t tick counter, read modulo below
   }
 
   if (!seg.check2) seg.fill(BLACK); // check2: Smear mode
