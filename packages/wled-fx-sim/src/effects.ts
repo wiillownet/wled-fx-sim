@@ -181,6 +181,7 @@ function modeBlinkRainbow(seg: Segment): void {
 }
 
 function modeStrobeRainbow(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   blink(seg, seg.color_wheel(seg.call & 0xff), seg.color(1), true, false);
 }
 
@@ -344,6 +345,7 @@ function modeDualScan(seg: Segment): void {
 
 // --- Fade (12) --------------------------------------------------------------
 function modeFade(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   const counter = seg.now * ((seg.speed >> 3) + 10);
   const lum = triwave16(counter & 0xffff) >> 8;
   for (let i = 0; i < seg.length; i++) {
@@ -1056,6 +1058,7 @@ function modeMultiStrobe(seg: Segment): void {
 
 // --- Fire Flicker (45) -------------------------------------------------------
 function modeFireFlicker(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   const cycleTime = 40 + (255 - seg.speed);
   const it = Math.trunc(seg.now / cycleTime);
   if (seg.step === it) return;
@@ -3213,6 +3216,7 @@ function modeStaticPattern(seg: Segment): void {
 }
 
 function modeTriStaticPattern(seg: Segment): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   const segSize = (seg.intensity >> 5) + 1;
   let currSeg = 0;
   let currSegCount = 0;
@@ -9382,6 +9386,7 @@ function rippleBase2D(seg: Segment2D, blurAmount = 0): void {
 }
 
 function mode2DRipple(seg: Segment2D): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   if (seg.custom1 || seg.check2) {
     seg.fade_out(250);
   } else {
@@ -9391,6 +9396,7 @@ function mode2DRipple(seg: Segment2D): void {
 }
 
 function mode2DRippleRainbow(seg: Segment2D): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   if (seg.call === 0) {
     seg.aux0 = seg.rng.random8();
     seg.aux1 = seg.rng.random8();
@@ -9554,6 +9560,7 @@ interface FireworksState2D {
 const fireworksState2D = new WeakMap<Segment2D, FireworksState2D>();
 
 function mode2DExplodingFireworks(seg: Segment2D): void {
+  if (seg.length <= 1) return fallbackStatic(seg);
   const cols = seg.width;
   const rows = seg.height;
 

@@ -239,6 +239,32 @@ describe('Rain (43) spark index', () => {
   });
 });
 
+describe('single-pixel fallback', () => {
+  it('falls back to a solid fill wherever upstream guards SEGLEN <= 1', () => {
+    // Every id here opens with `if (SEGLEN <= 1) FX_FALLBACK_STATIC` upstream.
+    const ids = [
+      12, 24, 31, 32, 35, 40, 41, 42, 43, 44, 45, 50, 57, 64, 66, 76, 78, 79,
+      82, 84, 89, 90, 91, 95, 96, 99, 104, 111, 112, 128, 129, 135, 147, 151,
+      155, 163, 179,
+    ];
+    for (const id of ids) {
+      for (const dimensions of ['1d', '2d'] as const) {
+        if (dimensions === '1d' ? !supports1D(id) : !supports2D(id)) continue;
+        const sim = createEffectSim(id, {
+          length: 1,
+          width: 1,
+          height: 1,
+          dimensions,
+          colors: [RED, GREEN, BLUE],
+        });
+        for (const t of [0, 500, 5000]) {
+          expect(sim.frame(t), `fx ${id} ${dimensions} @${t}`).toEqual([RED]);
+        }
+      }
+    }
+  });
+});
+
 describe('2D fallbacks', () => {
   it('audio 2D bodies fall back to a solid fill off a real matrix', () => {
     // GEQ, Funky Plank, Swirl, Waverly and Akemi all open with
