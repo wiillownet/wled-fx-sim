@@ -2006,3 +2006,33 @@ describe('Noise 1 (70) folds its step accumulator at uint32', () => {
     expect(sumAt(5000)).toBe(1226548420);
   });
 });
+
+describe('CRGB |= is a per-channel maximum, not a bitwise or', () => {
+  // fastled_slim.h:343 -- `operator|=` raises each channel to the larger of
+  // the two values. A bitwise or lights bits neither operand set, so both
+  // call sites came out measurably brighter than the firmware draws them:
+  // Juggle's dots by ~5% and Pacifica's whole strip by ~10%.
+  const lightSum = (fxId: number, pal: number) => {
+    const sim = createEffectSim(fxId, {
+      length: 60,
+      dimensions: '1d',
+      sx: 180,
+      ix: 128,
+      pal,
+      seed: 0x1234,
+    });
+    let total = 0;
+    for (const ms of [500, 1500, 3000])
+      total += sim.frame(ms).reduce((a, p) => a + p[0] + p[1] + p[2], 0);
+    return total;
+  };
+
+  it('Juggle (64) does not over-light its dots', () => {
+    expect(lightSum(64, 0)).toBe(7578); // 7672 with a bitwise or
+    expect(lightSum(64, 11)).toBe(10465); // 11057 with a bitwise or
+  });
+
+  it("Pacifica (101) floors its channels rather than or-ing them", () => {
+    expect(lightSum(101, 0)).toBe(10220); // 11223 with a bitwise or
+  });
+});

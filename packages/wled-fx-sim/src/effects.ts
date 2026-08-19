@@ -1861,15 +1861,27 @@ function modePacifica(seg: Segment): void {
     }
 
     c = [c[0], scale8(c[1], 200), scale8(c[2], 145)];
-    c = [c[0] | 2, c[1] | 5, c[2] | 7];
+    // CRGB::operator|= raises each channel to the larger value; it is a
+    // per-channel max, not a bitwise or (fastled_slim.h:343).
+    c = [Math.max(c[0], 2), Math.max(c[1], 5), Math.max(c[2], 7)];
 
     seg.setPixelColor(i, rgbw32(c[0], c[1], c[2]));
   }
 }
 
 // --- Juggle (64) --------------------------------------------------------------
-function orColor(a: number, b: number): number {
-  return rgbw32(R(a) | R(b), G(a) | G(b), B(a) | B(b));
+/**
+ * FastLED's `CRGB::operator|=` (fastled_slim.h:343): each channel is raised to
+ * the larger of the two values. Despite the spelling it is a per-channel max,
+ * not a bitwise or -- an or would light bits neither operand set and push the
+ * dots brighter than the firmware draws them.
+ */
+function maxColor(a: number, b: number): number {
+  return rgbw32(
+    Math.max(R(a), R(b)),
+    Math.max(G(a), G(b)),
+    Math.max(B(a), B(b)),
+  );
 }
 
 function modeJuggle(seg: Segment): void {
@@ -1889,7 +1901,7 @@ function modeJuggle(seg: Segment): void {
       seg.palette === 0
         ? hsv2rgb_rainbow(dothue, 220, 255)
         : colorFromPalette(seg.getCurrentPalette(), dothue, 255);
-    seg.setPixelColor(index, orColor(base, add));
+    seg.setPixelColor(index, maxColor(base, add));
     dothue = (dothue + 32) & 0xff;
   }
 }
