@@ -1929,6 +1929,21 @@ describe('uint32 time products fold before an integer divide', () => {
     expect(sumFrames(106, params, [late, late + 500, late + 1500])).toBe(26294); // 28820 unwrapped
   });
 
+  it('Sinewave (108) past the wrap of i * (strip.now / 32)', () => {
+    // Not a direct strip.now product -- the overflow is in `i * colorIndex`,
+    // so it arrives sooner on longer strips (~6 days at 250 px, ~26 at 60).
+    const late = 10 * 86400000;
+    const params = {
+      length: 250,
+      dimensions: '1d' as const,
+      sx: 180,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+    };
+    expect(sumFrames(108, params, [late, late + 500, late + 1500])).toBe(128965); // 129179 unwrapped
+  });
+
   it('Plasma Ball (178) past the ~6.2 day wrap of strip.now * 8', () => {
     const late = 7 * 86400000;
     const params = {

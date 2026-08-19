@@ -2115,7 +2115,9 @@ function modeSinewave(seg: Segment): void {
       color_blend(
         seg.color(1),
         seg.color_from_palette(
-          Math.trunc((i * colorIndex) / 255),
+          // `i * colorIndex` is an unsigned product upstream and the divisor
+          // is not a power of two, so it has to wrap before the divide.
+          Math.trunc(((i * colorIndex) >>> 0) / 255),
           false,
           false,
           0,
