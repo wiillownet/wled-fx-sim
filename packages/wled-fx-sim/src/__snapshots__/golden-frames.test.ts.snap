@@ -9028,24 +9028,14 @@ exports[`golden frames (seed 0x1234, sx=180, ix=200, pal=11, t=500ms) > fx 91 1`
     0,
   ],
   [
-    122,
+    114,
     0,
-    229,
+    233,
   ],
   [
     0,
-    9,
-    252,
-  ],
-  [
-    0,
-    0,
-    0,
-  ],
-  [
-    0,
-    173,
-    194,
+    29,
+    246,
   ],
   [
     0,
@@ -9053,9 +9043,19 @@ exports[`golden frames (seed 0x1234, sx=180, ix=200, pal=11, t=500ms) > fx 91 1`
     0,
   ],
   [
-    204,
     0,
-    165,
+    180,
+    187,
+  ],
+  [
+    0,
+    0,
+    0,
+  ],
+  [
+    199,
+    0,
+    171,
   ],
   [
     213,
@@ -9068,9 +9068,9 @@ exports[`golden frames (seed 0x1234, sx=180, ix=200, pal=11, t=500ms) > fx 91 1`
     0,
   ],
   [
-    168,
+    162,
     0,
-    201,
+    206,
   ],
   [
     0,
@@ -9348,11 +9348,6 @@ exports[`golden frames (seed 0x1234, sx=180, ix=200, pal=11, t=500ms) > fx 94 1`
 exports[`golden frames (seed 0x1234, sx=180, ix=200, pal=11, t=500ms) > fx 95 1`] = `
 [
   [
-    0,
-    0,
-    0,
-  ],
-  [
     122,
     0,
     229,
@@ -9380,6 +9375,11 @@ exports[`golden frames (seed 0x1234, sx=180, ix=200, pal=11, t=500ms) > fx 95 1`
   [
     236,
     105,
+    0,
+  ],
+  [
+    0,
+    0,
     0,
   ],
   [
@@ -34703,54 +34703,54 @@ exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 89
 exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 91 (alt) 1`] = `
 [
   [
-    122,
+    114,
     0,
-    229,
+    233,
   ],
   [
-    122,
+    114,
     0,
-    229,
+    233,
   ],
   [
-    122,
+    114,
     0,
-    229,
+    233,
   ],
   [
-    122,
+    114,
     0,
-    229,
+    233,
   ],
   [
-    122,
+    114,
     0,
-    229,
-  ],
-  [
-    0,
-    9,
-    252,
+    233,
   ],
   [
     0,
-    173,
-    194,
+    29,
+    246,
   ],
   [
     0,
-    173,
-    194,
+    180,
+    187,
   ],
   [
-    204,
     0,
-    165,
+    180,
+    187,
   ],
   [
-    204,
+    199,
     0,
-    165,
+    171,
+  ],
+  [
+    199,
+    0,
+    171,
   ],
   [
     213,
@@ -34758,14 +34758,14 @@ exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 91
     0,
   ],
   [
-    168,
+    162,
     0,
-    201,
+    206,
   ],
   [
-    168,
+    162,
     0,
-    201,
+    206,
   ],
   [
     0,
@@ -34788,11 +34788,6 @@ exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 91
 exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 95 (alt) 1`] = `
 [
   [
-    213,
-    182,
-    0,
-  ],
-  [
     122,
     0,
     229,
@@ -34821,6 +34816,11 @@ exports[`golden frames, alternate config (checks on, customs 200/120/60) > fx 95
     236,
     105,
     0,
+  ],
+  [
+    0,
+    219,
+    141,
   ],
   [
     0,

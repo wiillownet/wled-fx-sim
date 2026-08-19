@@ -239,6 +239,29 @@ describe('Rain (43) spark index', () => {
   });
 });
 
+describe('integer division at firmware widths', () => {
+  it('Bouncing Balls (91) truncates its bounce-time quotient', () => {
+    // (time - lastBounceTime) is an unsigned long and the speed divisor an
+    // int, so C truncates the quotient before widening it to float. Keeping
+    // the fraction moves the ball a pixel early on a long strip.
+    const seg = new Segment(300, 0x1234);
+    seg.speed = 0; // divisor 4, the coarsest -- biggest lost fraction
+    seg.intensity = 0; // a single ball
+    seg.colors = [0xffffff, 0, 0];
+    const pos: number[] = [];
+    for (let f = 0; f < 4; f++) {
+      seg.now = f * STEP_MS;
+      seg.refreshPalette();
+      EFFECT_SIMS[91](seg);
+      seg.call++;
+      let lit = -1;
+      for (let i = 0; i < seg.length; i++) if (seg.pixels[i]) lit = i;
+      pos.push(lit);
+    }
+    expect(pos).toEqual([0, 7, 14, 22]); // 0, 8, 15, 22 without the truncation
+  });
+});
+
 describe('Multi Comet (59) fade', () => {
   it('fades toward the secondary colour, not toward black', () => {
     // mode_multi_comet calls fade_out (which walks each channel toward

@@ -2487,9 +2487,11 @@ function modeBouncingBalls(seg: Segment): void {
   const time = seg.now;
 
   for (let i = 0; i < numBalls; i++) {
-    const timeSinceLastBounce =
-      (time - balls[i].lastBounceTime) /
-      (Math.trunc((255 - seg.speed) / 64) + 1);
+    // C divides an unsigned long by an int here, so the whole quotient
+    // truncates before it is widened to float.
+    const timeSinceLastBounce = Math.trunc(
+      (time - balls[i].lastBounceTime) / (Math.trunc((255 - seg.speed) / 64) + 1),
+    );
     const timeSec = timeSinceLastBounce / 1000;
     balls[i].height =
       (0.5 * gravity * timeSec + balls[i].impactVelocity) * timeSec;
@@ -2510,7 +2512,9 @@ function modeBouncingBalls(seg: Segment): void {
 
     let color = seg.color(0);
     if (seg.palette) {
-      color = seg.color_wheel(Math.trunc(i * (256 / Math.max(numBalls, 8))));
+      // 256 / MAX(numBalls, 8) is an integer division upstream, taken before
+      // the multiply by i.
+      color = seg.color_wheel(i * Math.trunc(256 / Math.max(numBalls, 8)));
     } else if (hasCol2) {
       color = seg.color(i % 3);
     }
@@ -2674,8 +2678,11 @@ function modePopcorn(seg: Segment): void {
 
   let popcorn = popcornState.get(seg);
   if (seg.call === 0 || !popcorn) {
+    // allocateData hands firmware a zeroed struct, and pos == 0 reads as
+    // "active" to the `pos >= 0` tests below, so the kernels start on the
+    // floor and fall out of range rather than starting inactive.
     popcorn = Array.from({ length: MAX_POPCORN }, () => ({
-      pos: -1,
+      pos: 0,
       vel: 0,
       colIndex: 0,
     }));
