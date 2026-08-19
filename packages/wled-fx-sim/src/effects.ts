@@ -7656,12 +7656,14 @@ function mode2DSoap(seg: Segment2D): void {
     const palette = seg.getCurrentPalette();
     for (let i = 0; i < cols; i++) {
       for (let j = 0; j < rows; j++) {
-        const c = colorFromPalette(
-          palette,
-          ((~noise3d[XY(i, j)] & 0xff) * 3) & 0xff,
+        // Only the segment buffer: upstream's `pixels` feedback buffer stays
+        // zeroed here, so soapPixels starts from black and colour bleeds in
+        // through its out-of-range palette branch.
+        seg.setPixelColorXY(
+          i,
+          j,
+          colorFromPalette(palette, ((~noise3d[XY(i, j)] & 0xff) * 3) & 0xff),
         );
-        pixels[XY(i, j)] = c;
-        seg.setPixelColorXY(i, j, c);
       }
     }
   }
