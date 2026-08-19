@@ -183,7 +183,7 @@ export function createEffectSim(
   const applyParams = (seg: Segment): void => {
     seg.speed = clamp8(params.sx ?? 128);
     seg.intensity = clamp8(params.ix ?? 128);
-    seg.palette = params.pal ?? 0;
+    seg.palette = clamp8(params.pal ?? 0); // uint8_t upstream (FX.h:449)
     const cols = params.colors ?? DEFAULT_COLORS;
     seg.colors = [
       pack(cols[0] ?? DEFAULT_COLORS[0]),
