@@ -228,7 +228,11 @@ export function createEffectSim(
     }
     while (steppedTo + FRAMETIME <= target) {
       steppedTo += FRAMETIME;
-      seg.now = steppedTo;
+      // strip.now is `uint32_t millis()` on the device, so it wraps at 2^32 ms
+      // (~49.7 days). Nothing bounds what a caller passes to frame() -- passing
+      // Date.now() is the obvious thing to write, and that is 417x past the
+      // range a device can hold -- so fold here rather than trust the input.
+      seg.now = steppedTo >>> 0;
       seg.refreshPalette();
       run(seg);
       seg.call++;

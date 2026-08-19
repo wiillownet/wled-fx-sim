@@ -190,3 +190,30 @@ describe('custom3 is a 5-bit slider', () => {
     expect(run(31)).not.toEqual(run(0));
   });
 });
+
+describe('strip.now wraps at uint32', () => {
+  // `strip.now` is `uint32_t millis()`, so a device's clock rolls over at 2^32
+  // ms (~49.7 days). Nothing stops a caller passing frame() a value past that
+  // -- Date.now() is the obvious thing to reach for, and it sits 417x outside
+  // the range. Offsetting by a whole number of FRAMETIMEs *and* a whole number
+  // of 2^32s keeps the stepping grid aligned, so a correct fold makes the two
+  // runs identical rather than merely similar.
+  const run = (base: number) => {
+    const sim = createEffectSim(106, {
+      length: 16,
+      dimensions: '1d',
+      sx: 100,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+    });
+    return sim.frame(base).reduce((a, p) => a + p[0] + p[1] + p[2], 0);
+  };
+
+  it('Twinkleup (106) renders the same frame either side of the rollover', () => {
+    // 106 divides now by (256 - speed) for a palette index, which is where an
+    // unfolded clock shows: 3345 instead of 3517.
+    expect(run(23 * 2 ** 32 + 4096 * 23)).toBe(run(4096 * 23));
+    expect(run(4096 * 23)).toBe(3517);
+  });
+});
