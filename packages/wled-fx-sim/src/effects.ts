@@ -10373,8 +10373,14 @@ const GRAY = 0x808080; // CRGB::Gray (fastled_slim.h:453)
  * float -> unsigned the way the ESP32 toolchain does it: negatives saturate to
  * 0. The saturation comes from the Xtensa hardware FP conversion the compiler
  * emits, not from libgcc's soft-float `__fixunssfsi` helper. Several of
- * these bodies feed a log10 term that goes negative below ~60 Hz straight into
- * an `unsigned`, so the choice is visible on screen, not academic.
+ * these bodies feed a log10 term that goes negative straight into an `unsigned`,
+ * so the choice is visible on screen, not academic. Where it turns negative
+ * depends on the constant subtracted: the freqmap-style bodies subtract 1.78
+ * (FX.cpp:7278, 7360), so ~60 Hz, and they guard it with a `< 61` test anyway.
+ * Gravfreq subtracts MAX_FREQ_LOG10 - 1.78 = 2.26 and has no guard at all
+ * (FX.cpp:6867), so it saturates below ~183 Hz -- a range the synthetic fixture
+ * spends most of its time in, which is why Gravfreq's colour is much flatter
+ * than Gravcenter's.
  */
 function fToUnsigned(v: number): number {
   return v < 0 ? 0 : Math.trunc(v);
