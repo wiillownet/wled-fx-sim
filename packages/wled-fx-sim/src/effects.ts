@@ -245,7 +245,7 @@ function colorWipe(seg: Segment, rev: boolean, useRandomColors = false): void {
     }
   }
 
-  const ledIndex = (prog * seg.length) >> 15;
+  const ledIndex = (prog * seg.length) >>> 15; // unsigned upstream
   let rem = (prog * seg.length * 2) & 0xffff;
   rem = Math.trunc(rem / (seg.intensity + 1));
   if (rem > 255) rem = 255;
