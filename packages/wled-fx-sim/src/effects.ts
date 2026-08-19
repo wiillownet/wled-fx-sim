@@ -2453,7 +2453,7 @@ function modeTetrix(seg: Segment): void {
     } else {
       drop.stack = 0;
       drop.step = 0;
-      if (seg.check1) drop.col += 8;
+      if (seg.check1) drop.col = (drop.col + 8) & 0xff; // uint8_t colour index
     }
   }
 }
