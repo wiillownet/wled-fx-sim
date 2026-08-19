@@ -420,8 +420,11 @@ export class Segment2D extends Segment {
     const cg = G(c);
     const cb = B(c);
     for (let i = 0; i < 4; i++) {
-      const wuX = (x >> 8) + (i & 1);
-      const wuY = (y >> 8) + ((i >> 1) & 1);
+      // x/y are uint32_t upstream, so the whole-pixel part is a logical shift:
+      // a coordinate that wrapped past 0 lands far off the matrix and is
+      // dropped, rather than folding back onto column/row 0 (Drift Rose, 123).
+      const wuX = (x >>> 8) + (i & 1);
+      const wuY = (y >>> 8) + ((i >> 1) & 1);
       const led = this.getPixelColorXY(wuX, wuY);
       const r = qadd8(R(led), (cr * wu[i]) >> 8);
       const g = qadd8(G(led), (cg * wu[i]) >> 8);

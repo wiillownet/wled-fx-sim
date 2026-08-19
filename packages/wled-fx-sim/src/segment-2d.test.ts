@@ -182,6 +182,14 @@ describe('Segment2D drawing', () => {
     expect(litCount(seg)).toBe(4);
   });
 
+  it('wu_pixel drops a coordinate that wrapped past zero', () => {
+    const seg = new Segment2D(8, 8);
+    // Drift Rose feeds wu_pixel `(negative float) >>> 0`; upstream's uint32_t
+    // param shifts that far off the matrix instead of back onto column 0.
+    seg.wu_pixel(-128 >>> 0, (3 << 8) | 128, 0xfcfcfc);
+    expect(litCount(seg)).toBe(0);
+  });
+
   it('inherited 1D helpers operate over the whole matrix', () => {
     const seg = new Segment2D(4, 4);
     seg.fill(0x808080);
