@@ -377,6 +377,22 @@ describe('SEGENV counters stay in their firmware widths', () => {
       expect(seg.aux1, `fx ${id} aux1`).toBe(0);
     }
   });
+
+  it('rolls Polar Lights (174) step over at uint32', () => {
+    // SEGENV.step is bumped once per pixel, so on a big matrix it reaches
+    // 2^32 in about 25 minutes; it feeds the noise Z coordinate as
+    // step / _speed, which does not survive counting past the field.
+    const seg = new Segment2D(64, 64, 0x1234);
+    seg.speed = 128;
+    seg.intensity = 128;
+    seg.colors = [0xffa000, 0, 0];
+    seg.step = 0xffffffff - 10;
+    seg.now = 1000;
+    seg.refreshPalette();
+    EFFECT_SIMS_2D[174](seg);
+    expect(seg.step).toBeLessThanOrEqual(0xffffffff);
+    expect(seg.step).toBeGreaterThanOrEqual(0);
+  });
 });
 
 describe('single-pixel fallback', () => {

@@ -6808,7 +6808,7 @@ function mode2DPolarLights(seg: Segment2D): void {
 
   for (let x = 0; x < cols; x++) {
     for (let y = 0; y < rows; y++) {
-      seg.step++;
+      seg.step = (seg.step + 1) >>> 0; // uint32_t: wraps in ~25 min on a big matrix
       let palindex = qsub8(
         perlin8(
           (seg.step % 2) + x * scale,
