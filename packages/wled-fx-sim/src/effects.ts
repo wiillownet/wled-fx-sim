@@ -4972,14 +4972,10 @@ function modeFillNoise8(seg: Segment): void {
 // --- Shimmer (161, mode_shimmer) ----------------------------------------------
 // By DedeHai (Damian Schneider). A soft gradient band travels across the
 // strip, pauses at the far end for an intensity-controlled interval, then
-// resets and repeats. Ported: the base traveling-glow band (must-have, per
-// the batch scope). NOT ported: the optional "Granular" (custom2) modulation
-// layer that can additionally texture the band with either a sine "Zebra"
-// stripe pattern or Perlin noise (`perlin16`, a different 2-arg 16-bit noise
-// function from the `inoise8` primitive this batch added) -- its firmware
-// default is already off (c2=0 in the real metadata string), so this port's
-// behavior matches stock defaults exactly; the modulation itself is a
-// lower-priority visual extra, not implemented here.
+// resets and repeats. The optional "Granular" (custom2) modulation layer is
+// ported too: it textures the band with either a sine "Zebra" stripe pattern
+// (check1) or Perlin noise. Its firmware default is off (c2=0 in the real
+// metadata string).
 function modeShimmer(seg: Segment): void {
   const buf = seg.allocateData(4); // persistent last-update timestamp
   const lastTime = new Uint32Array(buf.buffer, buf.byteOffset, 1);
