@@ -1834,3 +1834,32 @@ describe('spot checks against known behavior', () => {
     expect(snapshots.size).toBeGreaterThan(1);
   });
 });
+
+describe('PS Balance (209) tilts on 1D Perlin noise', () => {
+  // The firmware calls the *one-argument* perlin8 (util.cpp:1259), which is a
+  // different noise function from perlin8(x, 0), and it feeds it the full
+  // uint16 SEGENV.aux0 -- only cos8_t's own parameter narrows to a byte. Its
+  // sibling PS Box (193) has the identical construct and got it right.
+  const lightSum = (custom3: number) => {
+    const sim = createEffectSim(209, {
+      length: 60,
+      dimensions: '1d',
+      sx: 200,
+      ix: 255,
+      check3: true, // perlin tilt rather than the sine one
+      custom1: 0,
+      custom2: 0,
+      custom3,
+      seed: 0x1234,
+    });
+    let total = 0;
+    for (const ms of [500, 2000, 5000, 9000])
+      total += sim.frame(ms).reduce((a, p) => a + p[0] + p[1] + p[2], 0);
+    return total;
+  };
+
+  it('settles differently than the 2D noise form would', () => {
+    expect(lightSum(31)).toBe(17890); // 17138 via perlin8(aux0 & 0xff, 0)
+    expect(lightSum(8)).toBe(14477); // 15594 via perlin8(aux0 & 0xff, 0)
+  });
+});

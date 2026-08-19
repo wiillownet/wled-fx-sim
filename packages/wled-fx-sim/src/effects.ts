@@ -5885,9 +5885,12 @@ function modeParticleBalance(seg: Segment): void {
 
   if (seg.call % (((255 - seg.speed) >> 6) + 1) === 0) {
     const increment = (seg.speed >> 6) + 1;
-    seg.aux0 = (seg.aux0 + increment) & 0xff;
+    // aux0 is uint16_t upstream and feeds the *one-argument* perlin8, which
+    // is 1D noise (util.cpp:1259), not the 2D form with y=0. cos8_t narrows
+    // its own parameter to a byte, so only the noise path sees the high half.
+    seg.aux0 = (seg.aux0 + increment) & 0xffff;
     let xgravity = seg.check3
-      ? perlin8(seg.aux0, 0) - 128
+      ? inoise8(seg.aux0) - 128
       : cos8(seg.aux0) - 128;
     xgravity = Math.trunc((xgravity * ((seg.custom3 + 1) << 2)) / 128);
     ps.applyForce(xgravity);
