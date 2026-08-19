@@ -1909,3 +1909,41 @@ describe('uint32 time products fold before an integer divide', () => {
     expect(sumFrames(178, params, [late, late + 500, late + 1500])).toBe(335816); // 331239 unwrapped
   });
 });
+
+describe('Noise 2 (71) keeps its noise origin unsigned', () => {
+  // SEGENV.step is uint32 and this effect shifts it right by 6 to get the x
+  // origin. A signed shift reads the top half of the range back as a negative
+  // origin, offsetting real_x by 2^26*1000 -- which is not a multiple of 2^32,
+  // so perlin16's own uint32 fold does not absorb it. step climbs by up to
+  // 128/frame, reaching 2^31 in about 4.6 days at full speed.
+  //
+  // Sibling Noise 3 (72) needs no such fix: it feeds step through `* 8` only,
+  // and (step mod 2^32)*8 is congruent to step*8 mod 2^32, so the port's
+  // unbounded accumulator lands on the same noise coordinate either way.
+  const sumOverFrames = (fxId: number, startStep: number) => {
+    const seg = new Segment(40, 0x1234);
+    seg.speed = 255;
+    seg.intensity = 200;
+    seg.colors = [0xffffff, 0, 0];
+    seg.step = startStep;
+    let total = 0;
+    for (let f = 0; f < 3; f++) {
+      seg.now = f * STEP_MS;
+      seg.refreshPalette();
+      EFFECT_SIMS[fxId](seg);
+      seg.call++;
+      for (let i = 0; i < seg.length; i++) total += seg.pixels[i];
+    }
+    return total;
+  };
+
+  it('past 2^31 the x origin keeps climbing', () => {
+    expect(sumOverFrames(71, 2 ** 31 + 5000)).toBe(1229276412); // 607137804 signed
+  });
+
+  it('Noise 3 (72) is unaffected by how far step has run', () => {
+    expect(sumOverFrames(72, 2 ** 31 + 5000)).toBe(
+      sumOverFrames(72, 2 ** 33 + 5000),
+    );
+  });
+});

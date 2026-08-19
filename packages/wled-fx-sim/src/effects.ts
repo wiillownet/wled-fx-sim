@@ -4167,7 +4167,7 @@ function modeNoise16_2(seg: Segment): void {
   seg.step += 1 + (seg.speed >> 1);
 
   for (let i = 0; i < seg.length; i++) {
-    const shiftX = seg.step >> 6;
+    const shiftX = seg.step >>> 6; // SEGENV.step is uint32: x drifts, never folds negative
     const realX = (i + shiftX) * scale;
     const noise = inoise16(realX, 0, 4223) >>> 8;
     const index = sin8(noise * 3);
