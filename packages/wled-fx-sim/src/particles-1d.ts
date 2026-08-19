@@ -199,7 +199,11 @@ export class ParticleSystem1D {
       sourceFlags: newFlags(),
       var: 0,
       v: 0,
-      sat: 255,
+      // The 1D constructor sets only `source.ttl` and `sourceFlags`
+      // (FXparticleSystem.cpp:1156-1159), so sat and size stay 0 from the
+      // zeroed allocation -- unlike the 2D constructor, which does default
+      // its sources to full saturation.
+      sat: 0,
       size: 0,
     }));
     this.setSize(length);
