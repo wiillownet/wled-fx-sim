@@ -158,9 +158,13 @@ describe('volumeRaw (um_data slot 1)', () => {
       raws.push(volumeRaw);
       smths.push(volumeSmth);
     }
-    // volumeSmth carries a floor of 30; volumeRaw drops to silence between hits
-    expect(Math.min(...raws)).toBe(0);
-    expect(Math.min(...smths)).toBeGreaterThan(0);
+    // volumeSmth carries a deliberate floor of 30; volumeRaw has none and falls
+    // to silence between hits. It is not pinned to exactly 0: the hi-hat's decay
+    // is a 50ms exponential that never mathematically reaches zero, so the tail
+    // of a step rounds to 1 rather than 0. What the channel contrast needs is
+    // that raw's floor is negligible and smth's is not, which is the assertion.
+    expect(Math.min(...raws)).toBeLessThanOrEqual(1);
+    expect(Math.min(...smths)).toBeGreaterThanOrEqual(30);
     // ...but both reach full scale on a transient
     expect(Math.max(...raws)).toBe(255);
     // and they are genuinely different signals, not one aliased onto the other

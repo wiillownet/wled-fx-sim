@@ -2185,8 +2185,8 @@ describe('uint32 clocks roll over where the hardware ones do', () => {
   };
 
   it('Pixelwave (129) re-runs its secondHand after micros() wraps', () => {
-    expect(sumFrames(129, 5_000_000, 40, 100)).toBe(38993); // 12778 unwrapped
-    expect(sumFrames(129, 5_000, 40, 100)).toBe(24102); // unchanged before the wrap
+    expect(sumFrames(129, 5_000_000, 40, 100)).toBe(42697); // 37369 unwrapped
+    expect(sumFrames(129, 5_000, 40, 100)).toBe(42178); // control, before the wrap
   });
 
   it('Funky Plank (160) wraps on the same clock in 2D', () => {

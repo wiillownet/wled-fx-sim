@@ -97,7 +97,16 @@ const PEAK_TIMES = [...new Set([...KICK_STEPS, ...SNARE_STEPS])]
 // picks the loudest of the four voices it already models rather than inventing
 // an independent oscillator. The bass note is the voice that is loudest most of
 // the time, so the reported peak tracks the bassline contour, with transients
-// briefly pulling it into their own register the way a real analysis would.
+// pulling it into their own register the way a real analysis would.
+//
+// Known limitation: because the peak is whichever *voice* is loudest, it only
+// ever reports one of six frequencies -- the three bassline pitches, the kick,
+// the snare, or the hat. Real analysis returns a continuous value. Every effect
+// that maps peak frequency to a colour is therefore capped at six hues no
+// matter how the voices are weighted (Gravfreq is the clearest case: its index
+// depends on nothing else, so a whole frame is one colour). Fixing that means
+// giving the voices a phase-dependent peak rather than a constant one, which is
+// a bigger change to what the fixture claims to be.
 //
 // Pitches of the bassline notes (BASS_NOTES 1/2/3). C2 sits below firmware's
 // 80 Hz "treat as silence" cutoff (FX.cpp:7318, 7410) on purpose, so the ports'
@@ -110,6 +119,13 @@ const HAT_HZ = 7500;
 // Perceptual weights on the voices' envelopes. Without them the kick's raw
 // envelope masks the snare at every onset and the peak never leaves the bass
 // register, which would leave every log-frequency effect showing three colours.
+//
+// These are deliberately left where they are. Raising them would win the peak
+// for the transients more often, but the winning energy is also what
+// myMagnitude reports, so it would push more frames past the uint8 ceiling its
+// four consumers cast through -- and that ceiling is faithful firmware
+// behaviour worth exercising, not a bug to tune away. The hi-hat's decay rate
+// is the lever that moves the peak without touching magnitude at all.
 const SNARE_WEIGHT = 1.6;
 const HAT_WEIGHT = 1.4;
 
@@ -176,7 +192,12 @@ export function sampleSyntheticAudio(nowMs: number): SyntheticAudioFrame {
 
   // Bands 10-15: highs -- a hi-hat on every eighth note, accented on the beat.
   const hatAccent = step % 2 === 0 ? 140 : 90;
-  const hatEnv = hatAccent * Math.exp(-stepPhase * 14);
+  // Decay rate is per step, so the time constant is STEP_MS / rate: 50ms here,
+  // about what a closed hi-hat actually rings for. It used to be 14, i.e. 18ms,
+  // which is shorter than the 23ms frame period -- the hat had decayed below
+  // the bassline before the next frame could ever sample it, so the reported
+  // peak almost never left the bass register. See HAT_WEIGHT below.
+  const hatEnv = hatAccent * Math.exp(-stepPhase * 5);
   for (let i = 10; i < 16; i++) {
     fftResult[i] = roundToU8(hatEnv - (i - 10) * 8 + 10);
   }
