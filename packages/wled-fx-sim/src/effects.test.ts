@@ -2150,7 +2150,7 @@ describe('device memory budgets cap the per-segment arrays', () => {
 
   it('Fireworks 1D (90) stops adding sparks past 808px', () => {
     // 5 + (2000 >> 1) is 1005 sparks uncapped, 409 capped.
-    expect(sumFrames(90, 2000, [0, 40, 120, 300])).toBe(6149); // 7086 uncapped
+    expect(sumFrames(90, 2000, [0, 40, 120, 300])).toBe(6146); // 7083 uncapped
   });
 });
 
@@ -2262,5 +2262,51 @@ describe('shifts on strip.now are logical, not arithmetic', () => {
     // `tb = now >> 12` goes negative, so `tb > SEGENV.step` never fires again
     // and the ships stop picking new directions.
     expect(total).toBe(438285); // 419990 with an arithmetic shift
+  });
+});
+
+describe('float state that persists across frames is single precision', () => {
+  // The ESP32 evaluates C `float` arithmetic in 32-bit hardware; JS numbers are
+  // doubles. For a value recomputed from integer state each frame that is
+  // invisible, since the pixel quantises to a uint8 long before the extra 29
+  // mantissa bits could show. It matters for the float state FX.cpp keeps in
+  // segment data, where each frame's surplus precision feeds the next one.
+  //
+  // Of the effects carrying such state, these two are the ones whose
+  // accumulator is never reset: everything else (balls, sparks, drips, popcorn
+  // kernels, starburst fragments) re-seeds every few seconds, which bounds the
+  // divergence below what a frame can show. Both are run long enough for the
+  // paths to part.
+  const runLate = (fxId: number, frames: number) => {
+    const sim = createEffectSim(fxId, {
+      length: 256,
+      width: 16,
+      height: 16,
+      sx: 180,
+      ix: 200,
+      pal: 11,
+      seed: 0x1234,
+      custom1: 200,
+      custom2: 120,
+      custom3: 31,
+    });
+    let total = 0;
+    for (let f = 0; f < frames; f++) {
+      const px = sim.frame(f * 23);
+      if (f >= frames - 20) for (const p of px) total += p[0] + p[1] + p[2];
+    }
+    return total;
+  };
+
+  it('Rotozoomer (114) rotates on a single-precision angle', () => {
+    // FX.cpp:6636 subtracts from a `float*` into segment data every frame, so
+    // the angle is a pure accumulator and never re-seeded.
+    expect(runLate(114, 3000)).toBe(1734450); // 1734891 at double precision
+  });
+
+  it('Floating Blobs (121) drifts on single-precision positions', () => {
+    // blob_t's x/y/sX/sY/r are `float` (FX.cpp:6300-6304); positions integrate
+    // frame over frame and only reset when a blob bounces off an edge.
+    expect(runLate(121, 3000)).toBe(494448); // 522070 at double precision
   });
 });

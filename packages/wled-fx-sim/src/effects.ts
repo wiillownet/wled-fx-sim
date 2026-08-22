@@ -122,6 +122,26 @@ function map(
   );
 }
 
+/**
+ * Round to single precision.
+ *
+ * The ESP32 evaluates C `float` arithmetic in 32-bit hardware, so every float
+ * operation in FX.cpp rounds its result to a 24-bit mantissa. JS numbers are
+ * doubles and carry 53, so an unrounded port keeps ~29 bits the device never
+ * had. For a value that is recomputed from integer state each frame that is
+ * invisible -- the difference is far below the uint8 the pixel is quantised to.
+ * It matters for float state that *persists across frames*, where each frame's
+ * extra precision feeds the next and the divergence compounds with runtime.
+ *
+ * Applied to exactly those accumulators: the eight FX.cpp structs with float
+ * members that live in segment data (ball, rball_t, spark, star, tetris,
+ * spotlight, julia, blob_t) and the three raw `float*` casts into it
+ * (FX.cpp:3748, 4312, 6609), plus the per-frame locals that feed them. Float
+ * literals are rounded too: C's `0.0005f` is the single nearest that decimal,
+ * not the double.
+ */
+const f32 = Math.fround;
+
 /** WLED mapf(): the float form of map(), no truncation -- wled_math.cpp. */
 function mapf(
   x: number,
@@ -2461,7 +2481,7 @@ function modeTetrix(seg: Segment): void {
   if (drop.step === 0) {
     const speedIn = seg.speed !== 0 ? seg.speed : seg.rng.random8(1, 255);
     const speedMapped = map(speedIn, 1, 255, 5000, 250);
-    drop.speed = (seg.length * FRAMETIME) / speedMapped;
+    drop.speed = Math.fround((seg.length * FRAMETIME) / speedMapped);
     drop.pos = seg.length;
     if (!seg.check1) drop.col = seg.rng.random8(0, 15) << 4;
     drop.step = 1;
@@ -2476,7 +2496,7 @@ function modeTetrix(seg: Segment): void {
 
   if (drop.step === 2) {
     if (drop.pos > drop.stack) {
-      drop.pos -= drop.speed;
+      drop.pos = Math.fround(drop.pos - drop.speed);
       if (Math.trunc(drop.pos) < Math.trunc(drop.stack)) drop.pos = drop.stack;
       for (let i = Math.trunc(drop.pos); i < seg.length; i++) {
         const col =
@@ -2530,7 +2550,7 @@ function modeBouncingBalls(seg: Segment): void {
   if (!seg.check2) seg.fill(seg.color(2) ? BLACK : seg.color(1));
 
   const numBalls = Math.trunc((seg.intensity * (MAX_BALLS - 1)) / 255) + 1;
-  const gravity = -9.81;
+  const gravity = f32(-9.81);
   const hasCol2 = seg.color(2) !== 0;
   const time = seg.now;
 
@@ -2540,19 +2560,22 @@ function modeBouncingBalls(seg: Segment): void {
     const timeSinceLastBounce = Math.trunc(
       (time - balls[i].lastBounceTime) / (Math.trunc((255 - seg.speed) / 64) + 1),
     );
-    const timeSec = timeSinceLastBounce / 1000;
-    balls[i].height =
-      (0.5 * gravity * timeSec + balls[i].impactVelocity) * timeSec;
+    const timeSec = f32(timeSinceLastBounce / 1000);
+    balls[i].height = f32(
+      f32(f32(f32(f32(0.5) * gravity) * timeSec) + balls[i].impactVelocity) *
+        timeSec,
+    );
 
     if (balls[i].height <= 0) {
       balls[i].height = 0;
-      const dampening = 0.9 - i / (numBalls * numBalls);
-      balls[i].impactVelocity = dampening * balls[i].impactVelocity;
+      const dampening = f32(f32(0.9) - f32(i / (numBalls * numBalls)));
+      balls[i].impactVelocity = f32(dampening * balls[i].impactVelocity);
       balls[i].lastBounceTime = time;
 
       if (balls[i].impactVelocity < 0.015) {
-        balls[i].impactVelocity =
-          Math.sqrt(-2 * gravity) * (seg.rng.random8(5, 11) / 10);
+        balls[i].impactVelocity = f32(
+          f32(Math.sqrt(f32(-2 * gravity))) * f32(seg.rng.random8(5, 11) / 10),
+        );
       }
     } else if (balls[i].height > 1) {
       continue;
@@ -2600,13 +2623,14 @@ function modeRollingBalls(seg: Segment): void {
   if (seg.call === 0 || !balls) {
     seg.fill(hasCol2 ? BLACK : seg.color(1)); // start clean
     balls = Array.from({ length: MAX_ROLLING_BALLS }, () => {
-      let velocity = 20 * (seg.rng.random16(1000, 10000) / 10000); // 1 to 10
-      if (seg.rng.random8() < 128) velocity = -velocity; // 50% reverse direction
+      // FX.cpp:3070-3073, all four `float` (see f32).
+      let velocity = f32(f32(20) * f32(f32(seg.rng.random16(1000, 10000)) / f32(10000))); // 1 to 10
+      if (seg.rng.random8() < 128) velocity = f32(-velocity); // 50% reverse direction
       return {
         lastBounceUpdate: seg.now,
         velocity,
-        height: seg.rng.random16(0, 10000) / 10000, // 0. to 1.
-        mass: seg.rng.random16(1000, 10000) / 10000, // .1 to 1.
+        height: f32(f32(seg.rng.random16(0, 10000)) / f32(10000)), // 0. to 1.
+        mass: f32(f32(seg.rng.random16(1000, 10000)) / f32(10000)), // .1 to 1.
       };
     });
     rollingBallsState.set(seg, balls);
@@ -2614,7 +2638,7 @@ function modeRollingBalls(seg: Segment): void {
 
   const numBalls = Math.trunc(seg.intensity / 16) + 1;
   // Aircoookie's time-scaling conversion factor for the speed slider.
-  const cfac = (scale8(8, 255 - seg.speed) + 1) * 20000;
+  const cfac = f32((scale8(8, 255 - seg.speed) + 1) * f32(20000));
 
   if (seg.check3) {
     seg.fade_out(250); // 2-8 pixel trails (optional)
@@ -2623,12 +2647,18 @@ function modeRollingBalls(seg: Segment): void {
   }
 
   for (let i = 0; i < numBalls; i++) {
-    const timeSinceLastUpdate = (seg.now - balls[i].lastBounceUpdate) / cfac;
-    let thisHeight = balls[i].height + balls[i].velocity * timeSinceLastUpdate;
+    const timeSinceLastUpdate = f32(
+      f32(seg.now - balls[i].lastBounceUpdate) / cfac,
+    );
+    let thisHeight = f32(
+      balls[i].height + f32(balls[i].velocity * timeSinceLastUpdate),
+    );
 
     // intensity was raised and some balls are way off the track -- reset them
     if (thisHeight < -0.5 || thisHeight > 1.5) {
-      thisHeight = balls[i].height = seg.rng.random16(0, 10000) / 10000;
+      thisHeight = balls[i].height = f32(
+        f32(seg.rng.random16(0, 10000)) / f32(10000),
+      );
       balls[i].lastBounceUpdate = seg.now;
     }
 
@@ -2637,7 +2667,7 @@ function modeRollingBalls(seg: Segment): void {
       (thisHeight <= 0 && balls[i].velocity < 0) ||
       (thisHeight >= 1 && balls[i].velocity > 0)
     ) {
-      balls[i].velocity = -balls[i].velocity;
+      balls[i].velocity = f32(-balls[i].velocity);
       balls[i].lastBounceUpdate = seg.now;
       balls[i].height = thisHeight;
     }
@@ -2648,39 +2678,63 @@ function modeRollingBalls(seg: Segment): void {
         if (balls[j].velocity !== balls[i].velocity) {
           // tcollided + balls[j].lastBounceUpdate is the actual collision
           // time (keeps precision through the long-to-float conversion).
-          const tcollided =
-            (cfac * (balls[i].height - balls[j].height) +
-              balls[i].velocity *
-                (balls[j].lastBounceUpdate - balls[i].lastBounceUpdate)) /
-            (balls[j].velocity - balls[i].velocity);
+          const tcollided = f32(
+            f32(
+              f32(cfac * f32(balls[i].height - balls[j].height)) +
+                f32(
+                  balls[i].velocity *
+                    f32(
+                      balls[j].lastBounceUpdate - balls[i].lastBounceUpdate,
+                    ),
+                ),
+            ) / f32(balls[j].velocity - balls[i].velocity),
+          );
 
           if (
             tcollided > 2 &&
             tcollided < seg.now - balls[j].lastBounceUpdate
           ) {
-            balls[i].height =
+            balls[i].height = f32(
               balls[i].height +
-              (balls[i].velocity *
-                (tcollided +
-                  (balls[j].lastBounceUpdate - balls[i].lastBounceUpdate))) /
-                cfac;
+                f32(
+                  f32(
+                    balls[i].velocity *
+                      f32(
+                        tcollided +
+                          f32(
+                            balls[j].lastBounceUpdate -
+                              balls[i].lastBounceUpdate,
+                          ),
+                      ),
+                  ) / cfac,
+                ),
+            );
             balls[j].height = balls[i].height;
             balls[i].lastBounceUpdate =
               Math.trunc(tcollided + 0.5) + balls[j].lastBounceUpdate;
             balls[j].lastBounceUpdate = balls[i].lastBounceUpdate;
             const vtmp = balls[i].velocity;
-            balls[i].velocity =
-              ((balls[i].mass - balls[j].mass) * vtmp +
-                2 * balls[j].mass * balls[j].velocity) /
-              (balls[i].mass + balls[j].mass);
-            balls[j].velocity =
-              ((balls[j].mass - balls[i].mass) * balls[j].velocity +
-                2 * balls[i].mass * vtmp) /
-              (balls[i].mass + balls[j].mass);
-            thisHeight =
+            balls[i].velocity = f32(
+              f32(
+                f32(f32(balls[i].mass - balls[j].mass) * vtmp) +
+                  f32(f32(2 * balls[j].mass) * balls[j].velocity),
+              ) / f32(balls[i].mass + balls[j].mass),
+            );
+            balls[j].velocity = f32(
+              f32(
+                f32(f32(balls[j].mass - balls[i].mass) * balls[j].velocity) +
+                  f32(f32(2 * balls[i].mass) * vtmp),
+              ) / f32(balls[i].mass + balls[j].mass),
+            );
+            thisHeight = f32(
               balls[i].height +
-              (balls[i].velocity * (seg.now - balls[i].lastBounceUpdate)) /
-                cfac;
+                f32(
+                  f32(
+                    balls[i].velocity *
+                      f32(seg.now - balls[i].lastBounceUpdate),
+                  ) / cfac,
+                ),
+            );
           }
         }
       }
@@ -2741,21 +2795,21 @@ function modePopcorn(seg: Segment): void {
   const hasCol2 = seg.color(2) !== 0;
   if (!seg.check2) seg.fill(hasCol2 ? BLACK : seg.color(1));
 
-  let gravity = -0.0001 - seg.speed / 200000;
-  gravity *= seg.length;
+  let gravity = f32(f32(-0.0001) - f32(seg.speed / 200000));
+  gravity = f32(gravity * seg.length);
 
   let numPopcorn = Math.trunc((seg.intensity * MAX_POPCORN) / 255);
   if (numPopcorn === 0) numPopcorn = 1;
 
   for (let i = 0; i < numPopcorn; i++) {
     if (popcorn[i].pos >= 0) {
-      popcorn[i].pos += popcorn[i].vel;
-      popcorn[i].vel += gravity;
+      popcorn[i].pos = f32(popcorn[i].pos + popcorn[i].vel);
+      popcorn[i].vel = f32(popcorn[i].vel + gravity);
     } else if (seg.rng.random8() < 2) {
-      popcorn[i].pos = 0.01;
+      popcorn[i].pos = f32(0.01);
       let peakHeight = 128 + seg.rng.random8(128);
       peakHeight = (peakHeight * (seg.length - 1)) >> 8;
-      popcorn[i].vel = Math.sqrt(-2 * gravity * peakHeight);
+      popcorn[i].vel = f32(Math.sqrt(f32(f32(-2 * gravity) * peakHeight)));
 
       if (seg.palette) {
         popcorn[i].colIndex = seg.rng.random8();
@@ -3348,7 +3402,9 @@ function phasedBase(seg: Segment, moder: number): void {
   let modVal = 5;
 
   let index = Math.trunc(seg.now / 64);
-  phase += seg.speed / 32;
+  // FX.cpp:4318. 32.0 is a double literal, so the divide and the add stay
+  // double and only the store back into the float rounds (see f32).
+  phase = f32(phase + seg.speed / 32);
 
   for (let i = 0; i < seg.length; i++) {
     if (moder === 1) modVal = Math.trunc(inoise8(i * 10 + i * 10) / 16);
@@ -3619,7 +3675,7 @@ function modeDancingShadows(seg: Segment): void {
     if (!initialize) {
       // advance the position of the spotlight
       const delta = Math.trunc(
-        (time - spot.lastUpdateTime) *
+        f32(time - spot.lastUpdateTime) *
           (spot.speed * ((1.0 + seg.speed) / 100.0)),
       );
       if (Math.abs(delta) >= 1) {
@@ -3634,15 +3690,15 @@ function modeDancingShadows(seg: Segment): void {
     if (initialize || respawn) {
       spot.colorIdx = seg.rng.random8();
       spot.width = seg.rng.random8(1, 10);
-      spot.speed = 1.0 / seg.rng.random8(4, 50);
+      spot.speed = f32(1.0 / seg.rng.random8(4, 50));
 
       if (initialize) {
         spot.position = seg.rng.random16(seg.length);
-        spot.speed *= seg.rng.random8(2) ? 1.0 : -1.0;
+        spot.speed = f32(spot.speed * (seg.rng.random8(2) ? 1.0 : -1.0));
       } else {
         if (seg.rng.random8(2)) {
           spot.position = seg.length + spot.width;
-          spot.speed *= -1.0;
+          spot.speed = f32(spot.speed * -1.0);
         } else {
           spot.position = -spot.width;
         }
@@ -3904,8 +3960,8 @@ function modeDrip(seg: Segment): void {
   // (nrOfVStrips() is always 1), so that indirection collapses to a single
   // direct pass and indexToVStrip(index, 0) is dropped entirely.
   const numDrops = 1 + (seg.intensity >> 6);
-  let gravity = -0.0005 - seg.speed / 50000;
-  gravity *= Math.max(1, seg.length - 1);
+  let gravity = f32(f32(-0.0005) - f32(seg.speed / 50000));
+  gravity = f32(gravity * Math.max(1, seg.length - 1));
   const sourcedrop = 12;
 
   for (let j = 0; j < numDrops; j++) {
@@ -3943,9 +3999,9 @@ function modeDrip(seg: Segment): void {
       // falling
       if (drop.pos > 0) {
         // fall until end of segment
-        drop.pos += drop.vel;
+        drop.pos = f32(drop.pos + drop.vel);
         if (drop.pos < 0) drop.pos = 0;
-        drop.vel += gravity; // gravity is negative
+        drop.vel = f32(drop.vel + gravity); // gravity is negative
 
         // some minor math so we don't expand bouncing droplets
         for (let i = 1; i < 7 - drop.colIndex; i++) {
@@ -3975,8 +4031,8 @@ function modeDrip(seg: Segment): void {
         } else {
           if (drop.colIndex === 2) {
             // init bounce
-            drop.vel = -drop.vel / 4; // reverse velocity with damping
-            drop.pos += drop.vel;
+            drop.vel = f32(-drop.vel / 4); // reverse velocity with damping
+            drop.pos = f32(drop.pos + drop.vel);
           }
           drop.col = sourcedrop * 2;
           drop.colIndex = 5; // bouncing
@@ -4040,13 +4096,15 @@ function modeStarburst(seg: Segment): void {
     if (seg.rng.random8(144 - (seg.speed >> 1)) === 0 && stars[j].birth === 0) {
       // pick a random color and location
       const startPos = seg.rng.random16(seg.length - 1);
-      const multiplier = seg.rng.random8() / 255;
+      const multiplier = f32(seg.rng.random8() / f32(255));
 
       const star = stars[j];
       const wheelColor = seg.color_wheel(seg.rng.random8());
       star.color = [R(wheelColor), G(wheelColor), B(wheelColor)];
       star.pos = startPos;
-      star.vel = maxSpeed * (seg.rng.random8() / 255) * multiplier;
+      star.vel = f32(
+        f32(f32(maxSpeed * seg.rng.random8()) / f32(255)) * multiplier,
+      );
       star.birth = it;
       star.last = it;
       // more fragments means a larger burst effect
@@ -4063,17 +4121,19 @@ function modeStarburst(seg: Segment): void {
   for (let j = 0; j < numStars; j++) {
     const star = stars[j];
     if (star.birth !== 0) {
-      const dt = (it - star.last) / 1000.0;
+      const dt = f32((it - star.last) / 1000.0);
 
       for (let i = 0; i < STARBURST_MAX_FRAG; i++) {
         const varr = i >> 1;
         // all fragments travel right, will be mirrored on the other side
         if (star.fragment[i] > 0) {
-          star.fragment[i] += star.vel * dt * (varr / 3.0);
+          star.fragment[i] = f32(
+            star.fragment[i] + (f32(f32(star.vel * dt) * varr) / 3.0),
+          );
         }
       }
       star.last = it;
-      star.vel -= 3 * star.vel * dt;
+      star.vel = f32(star.vel - f32(f32(3 * star.vel) * dt));
     }
 
     let c: RGB = star.color;
@@ -4321,7 +4381,7 @@ function modeExplodingFireworks(seg: Segment): void {
 
   seg.fade_out(252);
 
-  const gravity = (-0.0004 - seg.speed / 800000) * rows;
+  const gravity = f32(f32(f32(-0.0004) - f32(seg.speed / 800000)) * rows);
 
   if (seg.aux0 < 2) {
     // FLARE
@@ -4330,7 +4390,7 @@ function modeExplodingFireworks(seg: Segment): void {
       flare.posX = seg.intensity > seg.rng.random8() ? 1 : 0;
       let peakHeight = 75 + seg.rng.random8(180);
       peakHeight = (peakHeight * (rows - 1)) >> 8;
-      flare.vel = Math.sqrt(-2 * gravity * peakHeight);
+      flare.vel = f32(Math.sqrt(f32(f32(-2 * gravity) * peakHeight)));
       flare.col = 255;
       seg.aux0 = 1;
     }
@@ -4342,9 +4402,9 @@ function modeExplodingFireworks(seg: Segment): void {
           ? rows - Math.trunc(flare.pos) - 1
           : Math.trunc(flare.pos);
       seg.setPixelColor(idx, rgbw32(gray, gray, gray));
-      flare.pos += flare.vel;
+      flare.pos = f32(flare.pos + flare.vel);
       flare.pos = Math.min(Math.max(flare.pos, 0), rows - 1);
-      flare.vel += gravity;
+      flare.vel = f32(flare.vel + gravity);
       flare.col -= 2;
     } else {
       seg.aux0 = 2; // ready to explode
@@ -4359,22 +4419,22 @@ function modeExplodingFireworks(seg: Segment): void {
       for (let i = 1; i < nSparks; i++) {
         sparks[i].pos = flare.pos;
         sparks[i].posX = flare.posX;
-        sparks[i].vel = seg.rng.random16(20001) / 10000 - 0.9;
-        sparks[i].vel *= rows < 32 ? 0.5 : 1;
+        sparks[i].vel = f32(f32(f32(seg.rng.random16(20001)) / f32(10000)) - f32(0.9));
+        sparks[i].vel = f32(sparks[i].vel * (rows < 32 ? f32(0.5) : 1));
         sparks[i].col = 345;
         sparks[i].colIndex = seg.rng.random8();
-        sparks[i].vel *= flare.pos / rows;
-        sparks[i].vel *= -gravity * 50;
+        sparks[i].vel = f32(sparks[i].vel * f32(flare.pos / rows));
+        sparks[i].vel = f32(sparks[i].vel * f32(f32(-gravity) * 50));
       }
-      state.dyingGravity = gravity / 2;
+      state.dyingGravity = f32(gravity / 2);
       seg.aux0 = 3;
     }
 
     if (sparks[1].col > 4) {
       // as long as our known spark is lit, work with all the sparks
       for (let i = 1; i < nSparks; i++) {
-        sparks[i].pos += sparks[i].vel;
-        sparks[i].vel += state.dyingGravity;
+        sparks[i].pos = f32(sparks[i].pos + sparks[i].vel);
+        sparks[i].vel = f32(sparks[i].vel + state.dyingGravity);
         if (sparks[i].col > 3) sparks[i].col -= 4;
 
         if (sparks[i].pos > 0 && sparks[i].pos < rows) {
@@ -4399,7 +4459,7 @@ function modeExplodingFireworks(seg: Segment): void {
         }
       }
       if (seg.check3) seg.blur(16);
-      state.dyingGravity *= 0.8; // as sparks burn out they fall slower
+      state.dyingGravity = f32(state.dyingGravity * f32(0.8)); // as sparks burn out they fall slower
     } else {
       seg.aux0 = 6 + seg.rng.random8(10); // wait this many frames
     }
@@ -6553,10 +6613,10 @@ function mode2DJulia(seg: Segment2D): void {
     seg.intensity = 24;
   }
 
-  st.xcen += (seg.custom1 - 128) / 100000;
-  st.ycen += (seg.custom2 - 128) / 100000;
-  st.xymag += ((seg.custom3 - 16) << 3) / 100000;
-  if (st.xymag < 0.01) st.xymag = 0.01;
+  st.xcen = f32(st.xcen + f32((seg.custom1 - 128) / f32(100000)));
+  st.ycen = f32(st.ycen + f32((seg.custom2 - 128) / f32(100000)));
+  st.xymag = f32(st.xymag + f32(((seg.custom3 - 16) << 3) / f32(100000)));
+  if (st.xymag < f32(0.01)) st.xymag = f32(0.01);
   if (st.xymag > 1.0) st.xymag = 1.0;
 
   const clampf = (v: number, lo: number, hi: number): number =>
@@ -7307,11 +7367,17 @@ function mode2DGhostRider(seg: Segment2D): void {
 // --- Blobs (121) ------------------------------------------------------------
 const MAX_BLOBS = 8;
 interface BlobState {
-  x: Float64Array;
-  y: Float64Array;
-  sX: Float64Array;
-  sY: Float64Array;
-  r: Float64Array;
+  // blob_t's five position/speed/radius arrays are `float` upstream
+  // (FX.cpp:6300-6304), so a Float32Array holds them at the width the device
+  // does and every store rounds where C's does. For the accumulating writes
+  // that matter -- `x[i] += sX[i]` and its siblings -- adding two singles in
+  // double and rounding once is exactly a single-precision add, so those are
+  // bit-identical to firmware rather than merely close.
+  x: Float32Array;
+  y: Float32Array;
+  sX: Float32Array;
+  sY: Float32Array;
+  r: Float32Array;
   grow: Uint8Array;
   color: Uint8Array;
 }
@@ -7329,11 +7395,11 @@ function mode2DFloatingBlobs(seg: Segment2D): void {
     seg.aux0 = cols;
     seg.aux1 = rows;
     blob = {
-      x: new Float64Array(MAX_BLOBS),
-      y: new Float64Array(MAX_BLOBS),
-      sX: new Float64Array(MAX_BLOBS),
-      sY: new Float64Array(MAX_BLOBS),
-      r: new Float64Array(MAX_BLOBS),
+      x: new Float32Array(MAX_BLOBS),
+      y: new Float32Array(MAX_BLOBS),
+      sX: new Float32Array(MAX_BLOBS),
+      sY: new Float32Array(MAX_BLOBS),
+      r: new Float32Array(MAX_BLOBS),
       grow: new Uint8Array(MAX_BLOBS),
       color: new Uint8Array(MAX_BLOBS),
     };
@@ -7481,8 +7547,11 @@ function mode2DPlasmaRotozoom(seg: Segment2D): void {
       );
     }
   }
-  rot.a -= 0.03 + (seg.speed - 128) * 0.0002; // rotation speed
-  if (rot.a < -6283.18530718) rot.a += 6283.18530718; // 1000*2*PI
+  rot.a = f32(
+    rot.a - f32(f32(0.03) + f32((seg.speed - 128) * f32(0.0002))),
+  ); // rotation speed
+  if (rot.a < f32(-6283.18530718))
+    rot.a = f32(rot.a + f32(6283.18530718)); // 1000*2*PI
 }
 
 // --- Distortion Waves (124) -------------------------------------------------
@@ -9666,7 +9735,7 @@ function mode2DExplodingFireworks(seg: Segment2D): void {
 
   seg.fade_out(252);
 
-  const gravity = (-0.0004 - seg.speed / 800000) * rows;
+  const gravity = f32(f32(f32(-0.0004) - f32(seg.speed / 800000)) * rows);
 
   if (seg.aux0 < 2) {
     // FLARE
@@ -9675,8 +9744,8 @@ function mode2DExplodingFireworks(seg: Segment2D): void {
       flare.posX = seg.rng.random16(2, cols - 3);
       let peakHeight = 75 + seg.rng.random8(180);
       peakHeight = (peakHeight * (rows - 1)) >> 8;
-      flare.vel = Math.sqrt(-2 * gravity * peakHeight);
-      flare.velX = (seg.rng.random8(9) - 4) / 64;
+      flare.vel = f32(Math.sqrt(f32(f32(-2 * gravity) * peakHeight)));
+      flare.velX = f32((seg.rng.random8(9) - 4) / f32(64));
       flare.col = 255;
       seg.aux0 = 1;
     }
@@ -9688,11 +9757,11 @@ function mode2DExplodingFireworks(seg: Segment2D): void {
         rows - Math.trunc(flare.pos) - 1,
         rgbw32(gray, gray, gray),
       );
-      flare.pos += flare.vel;
+      flare.pos = f32(flare.pos + flare.vel);
       flare.pos = Math.min(Math.max(flare.pos, 0), rows - 1);
-      flare.posX += flare.velX;
+      flare.posX = f32(flare.posX + flare.velX);
       flare.posX = Math.min(Math.max(flare.posX, 0), cols - 1);
-      flare.vel += gravity;
+      flare.vel = f32(flare.vel + gravity);
       flare.col -= 2;
     } else {
       seg.aux0 = 2; // ready to explode
@@ -9707,26 +9776,28 @@ function mode2DExplodingFireworks(seg: Segment2D): void {
       for (let i = 1; i < nSparks; i++) {
         sparks[i].pos = flare.pos;
         sparks[i].posX = flare.posX;
-        sparks[i].vel = seg.rng.random16(20001) / 10000 - 0.9;
-        sparks[i].vel *= rows < 32 ? 0.5 : 1;
-        sparks[i].velX = seg.rng.random16(20001) / 10000 - 1.0;
+        sparks[i].vel = f32(f32(f32(seg.rng.random16(20001)) / f32(10000)) - f32(0.9));
+        sparks[i].vel = f32(sparks[i].vel * (rows < 32 ? f32(0.5) : 1));
+        sparks[i].velX = f32(
+          f32(f32(seg.rng.random16(20001)) / f32(10000)) - f32(1.0),
+        );
         sparks[i].col = 345;
         sparks[i].colIndex = seg.rng.random8();
-        sparks[i].vel *= flare.pos / rows;
-        sparks[i].velX *= flare.posX / cols;
-        sparks[i].vel *= -gravity * 50;
+        sparks[i].vel = f32(sparks[i].vel * f32(flare.pos / rows));
+        sparks[i].velX = f32(sparks[i].velX * f32(flare.posX / cols));
+        sparks[i].vel = f32(sparks[i].vel * f32(f32(-gravity) * 50));
       }
-      state.dyingGravity = gravity / 2;
+      state.dyingGravity = f32(gravity / 2);
       seg.aux0 = 3;
     }
 
     if (sparks[1].col > 4) {
       // as long as our known spark is lit, work with all the sparks
       for (let i = 1; i < nSparks; i++) {
-        sparks[i].pos += sparks[i].vel;
-        sparks[i].posX += sparks[i].velX;
-        sparks[i].vel += state.dyingGravity;
-        sparks[i].velX += state.dyingGravity;
+        sparks[i].pos = f32(sparks[i].pos + sparks[i].vel);
+        sparks[i].posX = f32(sparks[i].posX + sparks[i].velX);
+        sparks[i].vel = f32(sparks[i].vel + state.dyingGravity);
+        sparks[i].velX = f32(sparks[i].velX + state.dyingGravity);
         if (sparks[i].col > 3) sparks[i].col -= 4;
 
         if (sparks[i].pos > 0 && sparks[i].pos < rows) {
@@ -9751,7 +9822,7 @@ function mode2DExplodingFireworks(seg: Segment2D): void {
         }
       }
       if (seg.check3) seg.blur(16);
-      state.dyingGravity *= 0.8; // as sparks burn out they fall slower
+      state.dyingGravity = f32(state.dyingGravity * f32(0.8)); // as sparks burn out they fall slower
     } else {
       seg.aux0 = 6 + seg.rng.random8(10); // wait this many frames
     }
