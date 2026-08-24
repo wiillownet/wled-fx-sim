@@ -1,5 +1,85 @@
 # @wiillownet/wled-fx-sim
 
+## 0.6.0
+
+### Minor Changes
+
+- A fidelity pass on what a preview is made of rather than on the effect bodies
+  themselves: the synthetic audio the audio-reactive effects react to, and the
+  precision of float state that survives from one frame to the next. No API
+  change, but rendered output moves for every audio-reactive effect and for the
+  fourteen that carry float state, so this is a minor rather than a patch:
+  anyone holding their own reference frames should expect churn.
+
+  **The hi-hat decayed faster than a frame could sample it.** Its envelope ran on
+  an 18ms time constant against a 23ms frame period, so it had fallen below the
+  bassline before the next frame arrived and the reported peak almost never left
+  the bass register. It now rings for 50ms, about what a closed hat actually
+  does. The peak reaches the treble register on 18.7% of frames rather than 7.2%,
+  while coverage below the 80Hz "treat as silence" cutoff stays at 20.8% so the
+  ports' blackout branch is still exercised.
+
+  **The reported peak only ever took six values.** It was whichever voice was
+  loudest, reported at that voice's one constant frequency: three bassline
+  pitches, the kick, the snare, the hat. Every effect mapping peak frequency to a
+  colour was capped at six hues no matter how the voices were balanced. Gravfreq
+  (158) was the pure case, since its index depends on nothing else, so a whole
+  frame came out one flat colour. The three percussive voices now slide their
+  peak as the hit rings, because high partials decay faster than low ones and a
+  struck source's loudest bin really does walk downward; the slide is geometric,
+  since pitch is perceived logarithmically and the envelopes driving it are
+  exponential. The bassline is deliberately left constant: a plucked fundamental
+  stays put and only its amplitude falls.
+
+  Distinct peaks over a full lattice period go from 6 to 151. Gravfreq (158)
+  renders 154 distinct colours over a phrase instead of 77, Freqmap (155) 413
+  instead of 277, Ripple Peak (148) 332 instead of 292, Freqpixels (141) 411
+  instead of 378, Freqmatrix (138) 25 instead of 14, Freqwave (137) 23 instead of 14. Waterfall (140) and Rocktaves (185) barely move, both for reasons on the
+  effect side: Waterfall only samples the audio when its second-hand tick
+  advances, 64ms apart at the default speed, so a 50ms hat ring mostly falls
+  between samples, and Rocktaves squelches anything under magnitude 48, which the
+  bassline never reaches. Both are faithful and were left alone.
+
+  Neither audio change touches `my_magnitude`. The slide moves which frequency
+  the winning voice reports, not its energy, and the hi-hat's decay rate was
+  chosen over its weight for the same reason. The peak magnitude, the number of
+  frames that run past the uint8 ceiling its consumers cast through, and the
+  share of frames under the 80Hz cutoff are all bit-identical to 0.5.0.
+
+  **Float state that persists across frames is now held at single precision.**
+  The ESP32 evaluates C `float` arithmetic in 32-bit hardware, so every float
+  operation in `FX.cpp` rounds to a 24-bit mantissa; JS numbers carry 53. For a
+  value recomputed from integer state each frame that surplus is invisible, since
+  the result is quantised to a uint8 the same frame. It compounds for state that
+  persists, where each frame's extra precision feeds the next. The rounding is
+  applied to exactly that: the eight `FX.cpp` structs with float members living in
+  segment data, the three raw `float*` casts into it, and the locals feeding them.
+  Floating Blobs (121) holds its five position, speed and radius arrays in a
+  `Float32Array` instead, which makes its accumulating writes bit-identical to
+  firmware rather than merely close.
+
+  C's evaluation is not uniformly single, and the port now follows it. A literal
+  without an `f` suffix is a `double` and promotes the expression around it, so
+  Starburst's frame delta and Phased's phase accumulator round only on the store,
+  while Popcorn's launch velocity rounds at every step. Association matters once
+  each step rounds: two Starburst expressions had been ported with their operands
+  regrouped, which is invisible in double and real in single, and both now
+  evaluate left to right as C does.
+
+  Rotozoomer (114) and Floating Blobs (121) are the effects where this is visible
+  over a long run, because their accumulators are the only ones never reset.
+  Everything else carrying float state (bouncing and rolling balls, fireworks
+  sparks, drips, popcorn kernels, starburst fragments) re-seeds within seconds,
+  which bounds the error below a pixel.
+
+  Known ceiling, left deliberately. The fixture's bassline still contributes only
+  three discrete pitches and wins the peak on roughly 81% of frames, so effects
+  sweep continuously during transients and sit on one of three values the rest of
+  the time; giving the bass a moving peak means modelling its harmonics against
+  its fundamental, which is a bigger change to what the fixture claims to be.
+  Per-frame float temporaries that feed rendering but never persist stay at
+  double, since they cannot compound.
+
 ## 0.5.0
 
 ### Minor Changes
