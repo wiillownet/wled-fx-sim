@@ -237,6 +237,32 @@ describe('fftMajorPeak / myMagnitude (um_data slots 4 and 5)', () => {
     expect(bassFrames).toBeGreaterThan(peaks.length / 2);
   });
 
+  it('slides a percussive voice down as it rings, rather than pinning it', () => {
+    // A struck source loses its high partials first, so its loudest bin walks
+    // downward while the hit decays. Without that each voice reports one
+    // constant frequency and every peak-to-colour effect is capped at as many
+    // hues as the fixture has voices. gcd(FRAMETIME, LOOP_MS) is 1, so 4000
+    // frames is the full lattice: every ms of the phrase gets sampled once.
+    const peaks: number[] = [];
+    for (let f = 0; f < 4000; f++)
+      peaks.push(sampleSyntheticAudio(f * FRAMETIME).fftMajorPeak);
+    const inBand = (lo: number, hi: number) =>
+      new Set(peaks.filter((hz) => hz >= lo && hz <= hi)).size;
+
+    // Each percussive band is swept rather than pinned to its onset frequency.
+    expect(inBand(44, 55)).toBeGreaterThan(2); // kick, 55 -> 44
+    expect(inBand(900, 1800)).toBeGreaterThan(2); // snare, 1800 -> 900
+    expect(inBand(4125, 7500)).toBeGreaterThan(2); // hat, 7500 -> 4125
+
+    // The bassline is deliberately *not* slid, so it stays on its three pitches.
+    expect(new Set(peaks.filter((hz) => hz > 55 && hz < 900)).size).toBe(3);
+
+    // Nothing slid out of its own band. The kick rising past 55 would put it in
+    // the bass register and could carry it over the 80Hz blackout cutoff.
+    expect(Math.min(...peaks)).toBeGreaterThanOrEqual(44);
+    expect(Math.max(...peaks)).toBeLessThanOrEqual(7500);
+  });
+
   it('dips below the 80Hz cutoff the effect bodies branch on', () => {
     // FX.cpp:7318/7410 blacks out below 80Hz; if the fixture never went there
     // that branch would be dead code in the ports.

@@ -99,14 +99,18 @@ const PEAK_TIMES = [...new Set([...KICK_STEPS, ...SNARE_STEPS])]
 // the time, so the reported peak tracks the bassline contour, with transients
 // pulling it into their own register the way a real analysis would.
 //
-// Known limitation: because the peak is whichever *voice* is loudest, it only
-// ever reports one of six frequencies -- the three bassline pitches, the kick,
-// the snare, or the hat. Real analysis returns a continuous value. Every effect
-// that maps peak frequency to a colour is therefore capped at six hues no
-// matter how the voices are weighted (Gravfreq is the clearest case: its index
-// depends on nothing else, so a whole frame is one colour). Fixing that means
-// giving the voices a phase-dependent peak rather than a constant one, which is
-// a bigger change to what the fixture claims to be.
+// The three percussive voices slide their peak as they ring (see slidPeak);
+// the bassline's do not. That is the honest split rather than a shortcut: a
+// struck or brushed source loses its high partials first, so its loudest bin
+// really does walk downward while the hit decays, whereas a plucked bass
+// fundamental stays put and only its amplitude falls.
+//
+// Remaining limitation: the bassline still contributes just three discrete
+// pitches, and it is the voice that wins the peak on ~81% of frames, so an
+// effect mapping peak frequency to a colour still spends most of its time on
+// one of three values and only sweeps continuously during transients. Giving
+// the bass a moving peak would mean modelling its harmonics fighting its
+// fundamental, which is a bigger change to what the fixture claims to be.
 //
 // Pitches of the bassline notes (BASS_NOTES 1/2/3). C2 sits below firmware's
 // 80 Hz "treat as silence" cutoff (FX.cpp:7318, 7410) on purpose, so the ports'
@@ -115,6 +119,19 @@ const NOTE_HZ = [0, 65.41, 98.0, 130.81]; // rest, C2, G2, C3
 const KICK_HZ = 55;
 const SNARE_HZ = 1800;
 const HAT_HZ = 7500;
+
+// Fraction of its onset frequency each percussive voice has slid to by the end
+// of its step (see slidPeak). The kick moves least -- its pitch envelope drops
+// but its energy was always in the fundamental -- while the snare's crack
+// giving way to the shell buzz, and the hi-hat's initial splash giving way to
+// its body resonance, are both close to an octave. All three are below 1, so a
+// voice only ever slides down out of its own register and never up into the
+// one above: that is what keeps the kick under firmware's 80 Hz "treat as
+// silence" cutoff at every phase, and so keeps the ports' blackout branch
+// reachable.
+const KICK_END_RATIO = 0.8; // 55 -> 44 Hz
+const SNARE_END_RATIO = 0.5; // 1800 -> 900 Hz
+const HAT_END_RATIO = 0.55; // 7500 -> 4125 Hz
 
 // Perceptual weights on the voices' envelopes. Without them the kick's raw
 // envelope masks the snare at every onset and the peak never leaves the bass
@@ -152,6 +169,21 @@ const MAGNITUDE_SCALE = 4;
 // envelopes are floats, and rounding is what keeps the band energies centred.
 function roundToU8(v: number): number {
   return Math.max(0, Math.min(255, Math.round(v)));
+}
+
+/**
+ * Where a percussive voice's peak has slid to at `phase` through its step.
+ *
+ * A real major peak does not sit still while a hit rings. High partials decay
+ * faster than low ones, so the loudest bin walks downward as the transient
+ * dies, and a fixture reporting one constant frequency per voice caps every
+ * peak-to-colour effect at as many hues as it has voices. Geometric rather
+ * than linear because pitch is perceived logarithmically and the envelopes
+ * driving it are exponential, so a constant ratio per unit phase is the shape
+ * that matches: at `phase` 1 the voice sits exactly `endRatio` of its onset.
+ */
+function slidPeak(baseHz: number, phase: number, endRatio: number): number {
+  return baseHz * Math.pow(endRatio, phase);
 }
 
 /** Pitch driving the peak at `step`; a rest holds the last sounding note. */
@@ -215,15 +247,15 @@ export function sampleSyntheticAudio(nowMs: number): SyntheticAudioFrame {
   let fftMajorPeak = NOTE_HZ[soundingNote(step)];
   let peakEnergy = bassBody;
   if (kickEnv > peakEnergy) {
-    fftMajorPeak = KICK_HZ;
+    fftMajorPeak = slidPeak(KICK_HZ, stepPhase, KICK_END_RATIO);
     peakEnergy = kickEnv;
   }
   if (snareEnv * SNARE_WEIGHT > peakEnergy) {
-    fftMajorPeak = SNARE_HZ;
+    fftMajorPeak = slidPeak(SNARE_HZ, stepPhase, SNARE_END_RATIO);
     peakEnergy = snareEnv * SNARE_WEIGHT;
   }
   if (hatEnv * HAT_WEIGHT > peakEnergy) {
-    fftMajorPeak = HAT_HZ;
+    fftMajorPeak = slidPeak(HAT_HZ, stepPhase, HAT_END_RATIO);
     peakEnergy = hatEnv * HAT_WEIGHT;
   }
 
